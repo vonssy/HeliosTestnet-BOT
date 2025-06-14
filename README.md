@@ -16,6 +16,8 @@ Helios Testnet BOT
   - Auto Make Bridge Tx
   - Multi Accounts
 
+### Note: Other features will be updated soon.
+
 ## Requiremnets
 
 - Make sure you have Python3.9 or higher installed and pip.
