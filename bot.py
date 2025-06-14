@@ -1,5 +1,6 @@
 from web3 import Web3
 from eth_utils import to_hex
+from eth_abi.abi import encode
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout
@@ -26,32 +27,22 @@ class Helios:
         self.BASE_API = "https://testnet-api.helioschain.network/api"
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
         self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
+        self.HLS_HEDGE_VALIDATION = "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"
+        self.HLS_SUPRA_VALIDATION = "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"
         self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
+        self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.ERC20_CONTRACT_ABI = json.loads('''[
             {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"address","type":"address"}],"outputs":[{"name":"","type":"uint256"}]},
             {"type":"function","name":"decimals","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint8"}]}
         ]''')
-        self.BRIDGE_CONTRACT_ABI = [
-        {
-            "inputs": [
-                    { "internalType": "uint32", "name": "dstEid", "type": "uint32" },
-                    { "internalType": "bytes32", "name": "to", "type": "bytes32" },
-                    { "internalType": "uint256", "name": "amountLD", "type": "uint256" },
-                    { "internalType": "uint256", "name": "minAmountLD", "type": "uint256" },
-                    { "internalType": "bytes", "name": "extraOptions", "type": "bytes" }
-                ],
-                "name": "send",
-                "outputs": [],
-                "stateMutability": "payable",
-                "type": "function"
-            }
-        ]
         self.proxies = []
         self.proxy_index = 0
         self.account_proxies = {}
         self.access_tokens = {}
-        self.tx_count = 0
-        self.amount = 0
+        self.bridge_count = 0
+        self.bridge_amount = 0
+        self.delegate_count = 0
+        self.delegate_amount = 0
         self.min_delay = 0
         self.max_delay = 0
 
@@ -214,42 +205,39 @@ class Helios:
             return token_balance
         except Exception as e:
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None
 
-    def build_calldata(self, dst_eid, to_address, amount_ld, min_amount_ld, receipt):
-        encoded_dst_eid = hex(dst_eid)[2:].rjust(64, '0')
-        encoded_offset1 = hex(160)[2:].rjust(64, '0')
-        encoded_to = to_address[2:].rjust(64, '0')
-        encoded_amount_ld = hex(amount_ld)[2:].rjust(64, '0')
-        encoded_min_amount_ld = hex(min_amount_ld)[2:].rjust(64, '0')
-        encoded_offset2 = hex(42)[2:].rjust(64, '0')
-        encoded_receipt = receipt.encode().hex() + "0" * 44
+    def pad_hex(self, value, length=64):
+        return hex(value)[2:].zfill(length)
 
-        calldata = (
-            "7ae4a8ff" +
-            encoded_dst_eid +
-            encoded_offset1 +
-            encoded_to +
-            encoded_amount_ld +
-            encoded_min_amount_ld +
-            encoded_offset2 +
-            encoded_receipt
-        )
-        return '0x' + calldata
+    def encode_string(self, string):
+        return string.lower()[2:].zfill(64)
+
+    def encode_string_as_bytes(self, string):
+        hex_str = string.encode('utf-8').hex()
+        return hex_str.ljust(64 * 2, '0')
 
     async def perform_bridge(self, account: str, address: str, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
+            
+            bridge_amount = web3.to_wei(self.bridge_amount, "ether")
+            estimated_fees = int(bridge_amount * 0.1)
 
-            dst_eid = 11155111
-            to_address = self.HLS_CONTRACT_ADDRESS.lower()
-            amount_ld = web3.to_wei(self.amount, "ether")
-            min_amount_ld = int(amount_ld * 0.1)
+            encoded_data = (
+                self.pad_hex(11155111) +
+                self.pad_hex(160) +
+                self.encode_string(self.HLS_CONTRACT_ADDRESS) +
+                self.pad_hex(bridge_amount) +
+                self.pad_hex(estimated_fees) +
+                self.pad_hex(42) +
+                self.encode_string_as_bytes(address)
+            )
 
-            calldata = self.build_calldata(dst_eid, to_address, amount_ld, min_amount_ld, address.lower())
+            calldata = "0x7ae4a8ff" + encoded_data
 
             max_priority_fee = web3.to_wei(1.111, "gwei")
             max_fee = max_priority_fee
@@ -269,14 +257,60 @@ class Helios:
             signed_tx = web3.eth.account.sign_transaction(tx, account)
             raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             tx_hash = web3.to_hex(raw_tx)
-            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=600)
             block_number = receipt.blockNumber
 
             return tx_hash, block_number
-
         except Exception as e:
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None, None
+        
+    async def perform_delegate(self, account: str, address: str, validation_address: str, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+
+            delegate_amount = web3.to_wei(self.delegate_amount, "ether")
+
+            encoded_data = encode(
+                ["address", "address", "uint256", "bytes"],
+                [
+                    address.lower(),
+                    validation_address.lower(),
+                    delegate_amount,
+                    "ahelios".encode("utf-8")
+                ]
+            )
+
+            calldata = "0xf5e56040" + encoded_data.hex()
+
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei") 
+
+            tx = {
+                "to": self.DELEGATE_ROUTER_ADDRESS,
+                "from": address,
+                "data": calldata,
+                "value": 0,
+                "gas": 1500000,
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
+                "nonce": web3.eth.get_transaction_count(address, "pending"),
+                "chainId": web3.eth.chain_id
+            }
+
+            signed_tx = web3.eth.account.sign_transaction(tx, account)
+            raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash = web3.to_hex(raw_tx)
+            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=600)
+            block_number = receipt.blockNumber
+
+            return tx_hash, block_number
+        except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None, None
@@ -300,28 +334,30 @@ class Helios:
                 print(f"{Fore.GREEN + Style.BRIGHT}Select Option:{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}1. Claim HLS Faucet{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS to Sepolia{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}3. Run All Features{Style.RESET_ALL}")
-                option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3] -> {Style.RESET_ALL}").strip())
+                print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate HLS{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}4. Run All Features{Style.RESET_ALL}")
+                option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4] -> {Style.RESET_ALL}").strip())
 
-                if option in [1, 2, 3]:
+                if option in [1, 2, 3, 4]:
                     option_type = (
                         "Claim HLS Faucet" if option == 1 else 
                         "Bridge HLS to Sepolia" if option == 2 else 
+                        "Delegate HLS" if option == 3 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, or 3.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, or 4.{Style.RESET_ALL}")
             except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, or 3).{Style.RESET_ALL}")
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, or 4).{Style.RESET_ALL}")
         
-        if option in [2, 3]:
+        if option == 2:
             while True:
                 try:
-                    tx_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
-                    if tx_count > 0:
-                        self.tx_count = tx_count
+                    bridge_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                    if bridge_count > 0:
+                        self.bridge_count = bridge_count
                         break
                     else:
                         print(f"{Fore.RED + Style.BRIGHT}Bridge Count must be > 0.{Style.RESET_ALL}")
@@ -330,12 +366,124 @@ class Helios:
 
             while True:
                 try:
-                    amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                    if amount > 0:
-                        self.amount = amount
+                    bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                    if bridge_amount > 0:
+                        self.bridge_amount = bridge_amount
                         break
                     else:
-                        print(f"{Fore.RED + Style.BRIGHT}Amount must be > 0.{Style.RESET_ALL}")
+                        print(f"{Fore.RED + Style.BRIGHT}Bridge Amount must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                    if min_delay >= 0:
+                        self.min_delay = min_delay
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                    if max_delay >= min_delay:
+                        self.max_delay = max_delay
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+        elif option == 3:
+            while True:
+                try:
+                    delegate_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Delegate Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                    if delegate_count > 0:
+                        self.delegate_count = delegate_count
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Delegate Count must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                    if delegate_amount > 0:
+                        self.delegate_amount = delegate_amount
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                    if min_delay >= 0:
+                        self.min_delay = min_delay
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                    if max_delay >= min_delay:
+                        self.max_delay = max_delay
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+        elif option == 4:
+            while True:
+                try:
+                    bridge_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                    if bridge_count > 0:
+                        self.bridge_count = bridge_count
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Bridge Count must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                    if bridge_amount > 0:
+                        self.bridge_amount = bridge_amount
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Bridge Amount must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    delegate_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Delegate Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                    if delegate_count > 0:
+                        self.delegate_count = delegate_count
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Delegate Count must be > 0.{Style.RESET_ALL}")
+                except ValueError:
+                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+            while True:
+                try:
+                    delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                    if delegate_amount > 0:
+                        self.delegate_amount = delegate_amount
+                        break
+                    else:
+                        print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
                 except ValueError:
                     print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
 
@@ -516,24 +664,50 @@ class Helios:
         if tx_hash and block_number:
             explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Status  :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
                 f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
             )
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Block   :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
             )
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
             )
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Explorer:{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
             )
         else:
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Status  :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
+            )
+
+    async def process_perform_delegate(self, account: str, address: str, validation_address: str, use_proxy: bool):
+        tx_hash, block_number = await self.perform_delegate(account, address, validation_address, use_proxy)
+        if tx_hash and block_number:
+            explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+            )
+        else:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
@@ -559,34 +733,74 @@ class Helios:
                 )
 
     async def process_option_2(self, account: str, address: str, use_proxy: bool):
-        for i in range(self.tx_count):
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Bridge    :{Style.RESET_ALL}")
+
+        for i in range(self.bridge_count):
             self.log(
-                f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
-                f"{Fore.GREEN+Style.BRIGHT}Bridge{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {i+1} {Style.RESET_ALL}"
-                f"{Fore.MAGENTA+Style.BRIGHT}Of{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {self.tx_count} {Style.RESET_ALL}                                   "
+                f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{self.bridge_count}{Style.RESET_ALL}                                   "
             )
 
             balance = await self.get_token_balance(address, "HLS", use_proxy)
 
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Balance :{Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {balance} HLS {Style.RESET_ALL}"
             )
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}   Amount  :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {self.amount} HLS {Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {self.bridge_amount} HLS {Style.RESET_ALL}"
             )
 
-            if not balance or balance <= self.amount:
+            if not balance or balance <= self.bridge_amount:
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}   Status  :{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} Insufficient HLS Token Balance {Style.RESET_ALL}"
                 )
                 return
             
             await self.process_perform_bridge(account, address, use_proxy)
+            await self.print_timer()
+
+    async def process_option_3(self, account: str, address: str, use_proxy: bool):
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Delegate  :{Style.RESET_ALL}                       ")
+
+        for i in range(self.delegate_count):
+            self.log(
+                f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{self.delegate_count}{Style.RESET_ALL}                                   "
+            )
+
+            validation_address = random.choice([self.HLS_HEDGE_VALIDATION, self.HLS_SUPRA_VALIDATION])
+            validator_name = "Helios-Hedge" if validation_address == self.HLS_HEDGE_VALIDATION else "Helios-Supra"
+
+            balance = await self.get_token_balance(address, "HLS", use_proxy)
+
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {balance} HLS {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {self.delegate_amount} HLS {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Validator:{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {validator_name} {Style.RESET_ALL}"
+            )
+
+            if not balance or balance <= self.delegate_amount:
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Insufficient HLS Token Balance {Style.RESET_ALL}"
+                )
+                return
+            
+            await self.process_perform_delegate(account, address, validation_address, use_proxy)
             await self.print_timer()
 
     async def process_accounts(self, account: str, address: str, option: int, use_proxy: bool, rotate_proxy: bool):
@@ -599,11 +813,18 @@ class Helios:
             elif option == 2:
                 await self.process_option_2(account, address, use_proxy)
 
+            elif option == 3:
+                await self.process_option_3(account, address, use_proxy)
+
             else:
                 await self.process_option_1(address, use_proxy)
                 await asyncio.sleep(5)
 
                 await self.process_option_2(account, address, use_proxy)
+                await asyncio.sleep(5)
+                
+                await self.process_option_3(account, address, use_proxy)
+                await asyncio.sleep(5)
 
     async def main(self):
         try:
