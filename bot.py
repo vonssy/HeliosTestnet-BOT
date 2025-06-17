@@ -28,7 +28,10 @@ class Helios:
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
         self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
         self.HLS_HEDGE_VALIDATION = "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"
+        self.HLS_PEER_VALIDATION = "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"
+        self.HLS_UNITY_VALIDATION = "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"
         self.HLS_SUPRA_VALIDATION = "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"
+        self.HLS_INTER_VALIDATION = "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"
         self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
         self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.ERC20_CONTRACT_ABI = json.loads('''[
@@ -775,8 +778,17 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.delegate_count}{Style.RESET_ALL}                                   "
             )
 
-            validation_address = random.choice([self.HLS_HEDGE_VALIDATION, self.HLS_SUPRA_VALIDATION])
-            validator_name = "Helios-Hedge" if validation_address == self.HLS_HEDGE_VALIDATION else "Helios-Supra"
+            validation_address = random.choice([
+                self.HLS_HEDGE_VALIDATION, self.HLS_PEER_VALIDATION, self.HLS_UNITY_VALIDATION,
+                self.HLS_SUPRA_VALIDATION, self.HLS_INTER_VALIDATION
+            ])
+            validator_name = (
+                "Helios-Hedge" if validation_address == self.HLS_HEDGE_VALIDATION else 
+                "Helios-Peer" if validation_address == self.HLS_PEER_VALIDATION else 
+                "Helios-Unity" if validation_address == self.HLS_UNITY_VALIDATION else 
+                "Helios-Supra" if validation_address == self.HLS_SUPRA_VALIDATION else 
+                "Helios-Inter"
+            )
 
             balance = await self.get_token_balance(address, "HLS", use_proxy)
 
