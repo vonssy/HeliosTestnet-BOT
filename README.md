@@ -2,7 +2,7 @@
 Helios Testnet BOT
 
 - Register Here : [Helios Testnet](https://testnet.helioschain.network/?code=APOLLO-RADIANT-832)
-- Use Code `APOLLO-RADIANT-832` - `THEIA-TITAN-669`
+- Use Code `APOLLO-RADIANT-832` - `ZENITH-DIVINE-521` - `THEIA-TITAN-669` - `HYPERION-GOLDEN-262` - `SOLAR-CELESTIAL-891`
 - Connect Discord Account
 
 ## Features
