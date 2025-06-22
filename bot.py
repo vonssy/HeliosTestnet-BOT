@@ -666,7 +666,7 @@ class Helios:
 
         return None
     
-    async def request_faucet(self, address: str, turnstile_token, proxy=None, retries=5):
+    async def request_faucet(self, address: str, turnstile_token: str, proxy=None, retries=5):
         url = f"{self.BASE_API}/faucet/request"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet", "amount":1, "turnstileToken":turnstile_token})
         headers = {
@@ -675,7 +675,6 @@ class Helios:
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
-        await asyncio.sleep(3)
         for attempt in range(retries):
             connector = ProxyConnector.from_url(proxy) if proxy else None
             try:
@@ -806,7 +805,7 @@ class Helios:
                         f"{Fore.GREEN + Style.BRIGHT} Capctha Turnstile Solved Successfully{Style.RESET_ALL}"
                     )
 
-                    request = await self.request_faucet(address, proxy)
+                    request = await self.request_faucet(address, turnstile_token, proxy)
                     if request and request.get("success", False):
                         self.log(
                             f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
