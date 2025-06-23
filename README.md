@@ -12,7 +12,7 @@ Helios Testnet BOT
   - Auto Run With Private Proxy - `Choose 2`
   - Auto Run Without Proxy - `Choose 3`
   - Auto Rotate Invalid Proxies - `y` or `n`
-  - Auto Claim HLS Faucet
+  - Auto Claim HLS Faucet - `Need 2captcha key`
   - Auto Bridge HLS to Sepolia
   - Auto Delegate HLS to Validator
   - Multi Accounts
@@ -22,6 +22,7 @@ Helios Testnet BOT
 ## Requiremnets
 
 - Make sure you have Python3.9 or higher installed and pip.
+- 2captcha key (Optional)
 
 ## Instalation
 
@@ -58,6 +59,12 @@ Helios Testnet BOT
   ```bash
     your_private_key_1
     your_private_key_2
+  ```
+
+- **2captcha_key.txt:** You will find the file `2captcha_key.txt` inside the project directory. Make sure `2captcha_key.txt` contains data that matches the format expected by the script. Here are examples of file formats:
+
+  ```bash
+    your_2captcha_key
   ```
 
 - **proxy.txt:** You will find the file `proxy.txt` inside the project directory. Make sure `proxy.txt` contains data that matches the format expected by the script. Here are examples of file formats:
