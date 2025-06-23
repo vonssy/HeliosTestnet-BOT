@@ -985,7 +985,7 @@ class Helios:
 
                 now = datetime.now()
                 seconds = int((next_run_at - now).total_seconds())
-                elapsed_seconds = now - started_at
+                elapsed_seconds = int((now - started_at).total_seconds())
                 formatted_elapsed = self.format_seconds(elapsed_seconds)
 
                 while seconds > 0:
