@@ -1,4 +1,3 @@
-from turnstile_client import clodpler
 from web3 import Web3
 from eth_utils import to_hex
 from eth_abi.abi import encode
@@ -877,8 +876,7 @@ class Helios:
                     f"{Fore.YELLOW+Style.BRIGHT}Solving Captcha Turnstile...{Style.RESET_ALL}"
                 )
 
-                # turnstile_token = await self.solve_cf_turnstile(proxy)
-                time_taken, turnstile_token, stats = await clodpler()
+                turnstile_token = await self.solve_cf_turnstile(proxy)
                 if turnstile_token:
                     self.log(
                         f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
