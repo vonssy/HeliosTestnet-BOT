@@ -6,7 +6,7 @@ from eth_account.messages import encode_defunct
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnector
 from fake_useragent import FakeUserAgent
-from datetime import datetime
+from datetime import datetime, timedelta
 from colorama import *
 import asyncio, random, json, os, pytz
 
@@ -113,7 +113,7 @@ class Helios:
                     return
                 with open(filename, 'r') as f:
                     self.proxies = [line.strip() for line in f.read().splitlines() if line.strip()]
-            
+
             if not self.proxies:
                 self.log(f"{Fore.RED + Style.BRIGHT}No Proxies Found.{Style.RESET_ALL}")
                 return
@@ -122,7 +122,7 @@ class Helios:
                 f"{Fore.GREEN + Style.BRIGHT}Proxies Total  : {Style.RESET_ALL}"
                 f"{Fore.WHITE + Style.BRIGHT}{len(self.proxies)}{Style.RESET_ALL}"
             )
-        
+
         except Exception as e:
             self.log(f"{Fore.RED + Style.BRIGHT}Failed To Load Proxies: {e}{Style.RESET_ALL}")
             self.proxies = []
@@ -149,12 +149,12 @@ class Helios:
         self.account_proxies[token] = proxy
         self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
         return proxy
-    
+
     def generate_address(self, account: str):
         try:
             account = Account.from_key(account)
             address = account.address
-            
+
             return address
         except Exception as e:
             self.log(
@@ -164,7 +164,7 @@ class Helios:
                 f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}                  "
             )
             return None
-        
+
     def generate_payload(self, account: str, address: str):
         try:
             message = f"Welcome to Helios! Please sign this message to verify your wallet ownership.\n\nWallet: {address}"
@@ -186,14 +186,14 @@ class Helios:
                 f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}                  "
             )
             return None
-        
+
     def mask_account(self, account):
         try:
             mask_account = account[:6] + '*' * 6 + account[-6:]
             return mask_account
         except Exception as e:
             return None
-        
+
     async def get_web3_with_check(self, address: str, use_proxy: bool, retries=3, timeout=60):
         request_kwargs = {"timeout": timeout}
 
@@ -212,7 +212,7 @@ class Helios:
                     await asyncio.sleep(3)
                     continue
                 raise Exception(f"Failed to Connect to RPC: {str(e)}")
-        
+
     async def get_token_balance(self, address: str, contract_address: str, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
@@ -408,7 +408,7 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None, None
-         
+
     async def print_timer(self):
         for remaining in range(random.randint(self.min_delay, self.max_delay), 0, -1):
             print(
@@ -421,7 +421,7 @@ class Helios:
                 flush=True
             )
             await asyncio.sleep(1)
-        
+
     def print_question(self):
         while True:
             try:
@@ -445,7 +445,7 @@ class Helios:
                     print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, or 4.{Style.RESET_ALL}")
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, or 4).{Style.RESET_ALL}")
-        
+
         if option == 2:
             while True:
                 try:
@@ -612,8 +612,8 @@ class Helios:
 
                 if choose in [1, 2, 3]:
                     proxy_type = (
-                        "With Free Proxyscrape" if choose == 1 else 
-                        "With Private" if choose == 2 else 
+                        "With Free Proxyscrape" if choose == 1 else
+                        "With Private" if choose == 2 else
                         "Without"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}Run {proxy_type} Proxy Selected.{Style.RESET_ALL}")
@@ -714,7 +714,7 @@ class Helios:
                 )
 
         return None
-    
+
     async def check_eligibility(self, address: str, proxy=None, retries=5):
         url = f"{self.BASE_API}/faucet/check-eligibility"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet"})
@@ -1033,7 +1033,10 @@ class Helios:
 
                 if use_proxy:
                     await self.load_proxies(use_proxy_choice)
-                
+
+                started_at = datetime.now()
+                next_run_at = started_at + timedelta(days=1)
+
                 separator = "=" * 25
                 for account in accounts:
                     if account:
@@ -1055,16 +1058,21 @@ class Helios:
                         await self.process_accounts(account, address, option, use_proxy_choice, rotate_proxy)
                         await asyncio.sleep(3)
 
-                self.log(f"{Fore.CYAN + Style.BRIGHT}={Style.RESET_ALL}"*72)
-                seconds = 24 * 60 * 60
+                self.log(f"{Fore.CYAN + Style.BRIGHT}={Style.RESET_ALL}" * 72)
+
+                now = datetime.now()
+                seconds = int((next_run_at - now).total_seconds())
+                elapsed_seconds = int((now - started_at).total_seconds())
+                formatted_elapsed = self.format_seconds(elapsed_seconds)
+
                 while seconds > 0:
                     formatted_time = self.format_seconds(seconds)
                     print(
-                        f"{Fore.CYAN+Style.BRIGHT}[ Wait for{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} {formatted_time} {Style.RESET_ALL}"
-                        f"{Fore.CYAN+Style.BRIGHT}... ]{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} | {Style.RESET_ALL}"
-                        f"{Fore.BLUE+Style.BRIGHT}All Accounts Have Been Processed.{Style.RESET_ALL}",
+                        f"{Fore.CYAN + Style.BRIGHT}[ Wait for{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {formatted_time} {Style.RESET_ALL}"
+                        f"{Fore.CYAN + Style.BRIGHT}... ]{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                        f"{Fore.BLUE + Style.BRIGHT}All accounts has been processed. Elapsed time {formatted_elapsed}{Style.RESET_ALL}",
                         end="\r"
                     )
                     await asyncio.sleep(1)
