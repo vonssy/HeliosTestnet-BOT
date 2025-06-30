@@ -27,16 +27,26 @@ class Helios:
         self.BASE_API = "https://testnet-api.helioschain.network/api"
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
         self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
-        self.HLS_HEDGE_VALIDATION = "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"
-        self.HLS_PEER_VALIDATION = "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"
-        self.HLS_UNITY_VALIDATION = "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"
-        self.HLS_SUPRA_VALIDATION = "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"
-        self.HLS_INTER_VALIDATION = "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"
+        self.DESTINATION_TOKEN = [
+            # { "Ticker": "Sepolia", "ChainId": 11155111 },
+            # { "Ticker": "Fuji", "ChainId": 43113 },
+            { "Ticker": "BSC Testnet", "ChainId": 97 },
+            # { "Ticker": "Amoy", "ChainId": 80002 }
+        ]
+        self.VALIDATION_CONTRACT_ADDRESS = [
+            {"Moniker": "Helios-Hedge", "Contract Address": "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"},
+            {"Moniker": "Helios-Peer", "Contract Address": "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"},
+            # {"Moniker": "Helios-Unity", "Contract Address": "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"},
+            # {"Moniker": "Helios-Supra", "Contract Address": "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"},
+            {"Moniker": "Helios-Inter", "Contract Address": "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"}
+        ]
         self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
         self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.ERC20_CONTRACT_ABI = json.loads('''[
             {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"address","type":"address"}],"outputs":[{"name":"","type":"uint256"}]},
-            {"type":"function","name":"decimals","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint8"}]}
+            {"type":"function","name":"decimals","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint8"}]},
+            {"type":"function","name":"allowance","stateMutability":"view","inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"outputs":[{"name":"","type":"uint256"}]},
+            {"type":"function","name":"approve","stateMutability":"nonpayable","inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[{"name":"","type":"bool"}]}
         ]''')
         self.PAGE_URL = "https://testnet.helioschain.network"
         self.SITE_KEY = "0x4AAAAAABhz7Yc1no53_eWA"
@@ -76,7 +86,7 @@ class Helios:
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
-
+    
     def load_2captcha_key(self):
         try:
             with open("2captcha_key.txt", 'r') as file:
@@ -85,7 +95,7 @@ class Helios:
             return captcha_key
         except Exception as e:
             return None
-
+    
     async def load_proxies(self, use_proxy_choice: bool):
         filename = "proxy.txt"
         try:
@@ -228,24 +238,84 @@ class Helios:
     def pad_hex(self, value, length=64):
         return hex(value)[2:].zfill(length)
 
-    def encode_string(self, string):
-        return string.lower()[2:].zfill(64)
+    def encode_hex_as_string(self, string, length=32):
+        return string.lower()[2:].rjust(length * 2, '0')
 
-    def encode_string_as_bytes(self, string):
+    def encode_string_as_bytes(self, string, length=64):
         hex_str = string.encode('utf-8').hex()
-        return hex_str.ljust(64 * 2, '0')
+        return hex_str.ljust(length * 2, '0')
+    
+    async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+            
+            spender = web3.to_checksum_address(spender_address)
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(contract_address), abi=self.ERC20_CONTRACT_ABI)
+            decimals = token_contract.functions.decimals().call()
 
-    async def perform_bridge(self, account: str, address: str, use_proxy: bool):
+            amount_to_wei = int(self.bridge_amount * (10 ** decimals))
+
+            allowance = token_contract.functions.allowance(address, spender).call()
+            if allowance < amount_to_wei:
+                approve_data = token_contract.functions.approve(spender, amount_to_wei)
+
+                latest_block = web3.eth.get_block("latest")
+                base_fee = latest_block.get("baseFeePerGas", 0)
+                max_priority_fee = web3.to_wei(1.111, "gwei")
+                max_fee = base_fee + max_priority_fee
+
+                approve_tx = approve_data.build_transaction({
+                    "from": address,
+                    "gas": 1500000,
+                    "maxFeePerGas": int(max_fee),
+                    "maxPriorityFeePerGas": int(max_priority_fee),
+                    "nonce": web3.eth.get_transaction_count(address, "pending"),
+                    "chainId": web3.eth.chain_id,
+                })
+
+                signed_tx = web3.eth.account.sign_transaction(approve_tx, account)
+                raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                tx_hash = web3.to_hex(raw_tx)
+                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+                block_number = receipt.blockNumber
+                
+                explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+                
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Approve :{Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+                )
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Block   :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+                )
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Tx Hash :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+                )
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Explorer:{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+                )
+                await asyncio.sleep(10)
+            
+            return True
+        except Exception as e:
+            raise Exception(f"Approving Token Contract Failed: {str(e)}")
+
+    async def perform_bridge(self, account: str, address: str, dest_chain_id: int, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
+            await self.approving_token(account, address, self.BRIDGE_ROUTER_ADDRESS, self.HLS_CONTRACT_ADDRESS, use_proxy)
+            
             bridge_amount = web3.to_wei(self.bridge_amount, "ether")
-            estimated_fees = int(bridge_amount * 0.1)
+            estimated_fees = int(bridge_amount * 0.01)
 
             encoded_data = (
-                self.pad_hex(11155111) +
+                self.pad_hex(dest_chain_id) +
                 self.pad_hex(160) +
-                self.encode_string(self.HLS_CONTRACT_ADDRESS) +
+                self.encode_hex_as_string(self.HLS_CONTRACT_ADDRESS) +
                 self.pad_hex(bridge_amount) +
                 self.pad_hex(estimated_fees) +
                 self.pad_hex(42) +
@@ -282,8 +352,8 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None, None
-
-    async def perform_delegate(self, account: str, address: str, validation_address: str, use_proxy: bool):
+        
+    async def perform_delegate(self, account: str, address: str, contract_address: str, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
@@ -293,7 +363,7 @@ class Helios:
                 ["address", "address", "uint256", "bytes"],
                 [
                     address.lower(),
-                    validation_address.lower(),
+                    contract_address.lower(),
                     delegate_amount,
                     "ahelios".encode("utf-8")
                 ]
@@ -301,15 +371,24 @@ class Helios:
 
             calldata = "0xf5e56040" + encoded_data.hex()
 
+            latest_block = web3.eth.get_block("latest")
+            base_fee = latest_block.get("baseFeePerGas", 0)
             max_priority_fee = web3.to_wei(2.5, "gwei")
-            max_fee = web3.to_wei(4.5, "gwei")
+            max_fee = base_fee + max_priority_fee + web3.to_wei(1, "gwei")
+
+            estimated_gas = await asyncio.to_thread(web3.eth.estimate_gas, {
+                "to": self.DELEGATE_ROUTER_ADDRESS,
+                "from": address,
+                "data": calldata,
+                "value": 0,
+            })
 
             tx = {
                 "to": self.DELEGATE_ROUTER_ADDRESS,
                 "from": address,
                 "data": calldata,
                 "value": 0,
-                "gas": 1500000,
+                "gas": int(estimated_gas * 1.2),
                 "maxFeePerGas": int(max_fee),
                 "maxPriorityFeePerGas": int(max_priority_fee),
                 "nonce": web3.eth.get_transaction_count(address, "pending"),
@@ -348,16 +427,16 @@ class Helios:
             try:
                 print(f"{Fore.GREEN + Style.BRIGHT}Select Option:{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}1. Claim HLS Faucet{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS to Sepolia{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate HLS{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}4. Run All Features{Style.RESET_ALL}")
                 option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4] -> {Style.RESET_ALL}").strip())
 
                 if option in [1, 2, 3, 4]:
                     option_type = (
-                        "Claim HLS Faucet" if option == 1 else
-                        "Bridge HLS to Sepolia" if option == 2 else
-                        "Delegate HLS" if option == 3 else
+                        "Claim HLS Faucet" if option == 1 else 
+                        "Bridge HLS" if option == 2 else 
+                        "Delegate HLS" if option == 3 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
@@ -556,7 +635,7 @@ class Helios:
                     print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter 'y' or 'n'.{Style.RESET_ALL}")
 
         return option, choose, rotate
-
+    
     async def solve_cf_turnstile(self, proxy=None, retries=5):
         for attempt in range(retries):
             connector = ProxyConnector.from_url(proxy) if proxy else None
@@ -565,7 +644,7 @@ class Helios:
 
                     if self.CAPTCHA_KEY is None:
                         return None
-
+                    
                     url = f"http://2captcha.com/in.php?key={self.CAPTCHA_KEY}&method=turnstile&sitekey={self.SITE_KEY}&pageurl={self.PAGE_URL}"
                     async with session.get(url=url) as response:
                         response.raise_for_status()
@@ -608,8 +687,7 @@ class Helios:
                     await asyncio.sleep(5)
                     continue
                 return None
-
-
+    
     async def user_login(self, account: str, address: str, proxy=None, retries=5):
         url = f"{self.BASE_API}/users/login"
         data = json.dumps(self.generate_payload(account, address))
@@ -676,7 +754,6 @@ class Helios:
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
-        await asyncio.sleep(3)
         for attempt in range(retries):
             connector = ProxyConnector.from_url(proxy) if proxy else None
             try:
@@ -732,8 +809,8 @@ class Helios:
             )
             return False
     
-    async def process_perform_bridge(self, account: str, address: str, use_proxy: bool):
-        tx_hash, block_number = await self.perform_bridge(account, address, use_proxy)
+    async def process_perform_bridge(self, account: str, address: str, dest_chain_id: int, use_proxy: bool):
+        tx_hash, block_number = await self.perform_bridge(account, address, dest_chain_id, use_proxy)
         if tx_hash and block_number:
             explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
             self.log(
@@ -758,8 +835,8 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
-    async def process_perform_delegate(self, account: str, address: str, validation_address: str, use_proxy: bool):
-        tx_hash, block_number = await self.perform_delegate(account, address, validation_address, use_proxy)
+    async def process_perform_delegate(self, account: str, address: str, contract_address: str, use_proxy: bool):
+        tx_hash, block_number = await self.perform_delegate(account, address, contract_address, use_proxy)
         if tx_hash and block_number:
             explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
             self.log(
@@ -841,6 +918,14 @@ class Helios:
 
             balance = await self.get_token_balance(address, "HLS", use_proxy)
 
+            destination = random.choice(self.DESTINATION_TOKEN)
+            ticker = destination["Ticker"]
+            dest_chain_id = destination["ChainId"]
+
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Option   :{Style.RESET_ALL}"
+                f"{Fore.BLUE+Style.BRIGHT} Helios to {ticker} {Style.RESET_ALL}"
+            )
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {balance} HLS {Style.RESET_ALL}"
@@ -857,7 +942,7 @@ class Helios:
                 )
                 return
             
-            await self.process_perform_bridge(account, address, use_proxy)
+            await self.process_perform_bridge(account, address, dest_chain_id, use_proxy)
             await self.print_timer()
 
     async def process_option_3(self, account: str, address: str, use_proxy: bool):
@@ -871,17 +956,9 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.delegate_count}{Style.RESET_ALL}                                   "
             )
 
-            validation_address = random.choice([
-                self.HLS_HEDGE_VALIDATION, self.HLS_PEER_VALIDATION,
-                self.HLS_SUPRA_VALIDATION, self.HLS_INTER_VALIDATION
-            ])
-            validator_name = (
-                "Helios-Hedge" if validation_address == self.HLS_HEDGE_VALIDATION else 
-                "Helios-Peer" if validation_address == self.HLS_PEER_VALIDATION else 
-                "Helios-Unity" if validation_address == self.HLS_UNITY_VALIDATION else 
-                "Helios-Supra" if validation_address == self.HLS_SUPRA_VALIDATION else 
-                "Helios-Inter"
-            )
+            validation = random.choice(self.VALIDATION_CONTRACT_ADDRESS)
+            moniker = validation["Moniker"]
+            contract_address = validation["Contract Address"]
 
             balance = await self.get_token_balance(address, "HLS", use_proxy)
 
@@ -895,7 +972,7 @@ class Helios:
             )
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Validator:{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {validator_name} {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {moniker} {Style.RESET_ALL}"
             )
 
             if not balance or balance <= self.delegate_amount:
@@ -905,7 +982,7 @@ class Helios:
                 )
                 return
             
-            await self.process_perform_delegate(account, address, validation_address, use_proxy)
+            await self.process_perform_delegate(account, address, contract_address, use_proxy)
             await self.print_timer()
 
     async def process_accounts(self, account: str, address: str, option: int, use_proxy: bool, rotate_proxy: bool):
