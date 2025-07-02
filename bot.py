@@ -1,4 +1,5 @@
 from web3 import Web3
+from web3.exceptions import TransactionNotFound
 from eth_utils import to_hex
 from eth_abi.abi import encode
 from eth_account import Account
@@ -28,15 +29,15 @@ class Helios:
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
         self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
         self.DESTINATION_TOKEN = [
-            # { "Ticker": "Sepolia", "ChainId": 11155111 },
-            # { "Ticker": "Fuji", "ChainId": 43113 },
+            { "Ticker": "Sepolia", "ChainId": 11155111 },
+            { "Ticker": "Fuji", "ChainId": 43113 },
             { "Ticker": "BSC Testnet", "ChainId": 97 },
             # { "Ticker": "Amoy", "ChainId": 80002 }
         ]
         self.VALIDATION_CONTRACT_ADDRESS = [
             {"Moniker": "Helios-Hedge", "Contract Address": "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"},
             {"Moniker": "Helios-Peer", "Contract Address": "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"},
-            # {"Moniker": "Helios-Unity", "Contract Address": "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"},
+            {"Moniker": "Helios-Unity", "Contract Address": "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"},
             # {"Moniker": "Helios-Supra", "Contract Address": "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"},
             {"Moniker": "Helios-Inter", "Contract Address": "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"}
         ]
@@ -245,6 +246,17 @@ class Helios:
         hex_str = string.encode('utf-8').hex()
         return hex_str.ljust(length * 2, '0')
     
+    async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
+        for attempt in range(retries):
+            await asyncio.sleep(5)
+            try:
+                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+                return receipt
+            except (Exception, TransactionNotFound) as e:
+                if attempt < retries:
+                    continue
+                raise Exception("Transaction receipt not found after maximum retries.")
+    
     async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
@@ -276,7 +288,7 @@ class Helios:
                 signed_tx = web3.eth.account.sign_transaction(approve_tx, account)
                 raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
                 tx_hash = web3.to_hex(raw_tx)
-                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+                receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
                 block_number = receipt.blockNumber
                 
                 explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
@@ -324,15 +336,24 @@ class Helios:
 
             calldata = "0x7ae4a8ff" + encoded_data
 
+            latest_block = web3.eth.get_block("latest")
+            base_fee = latest_block.get("baseFeePerGas", 0)
             max_priority_fee = web3.to_wei(1.111, "gwei")
-            max_fee = max_priority_fee
+            max_fee = base_fee + max_priority_fee + web3.to_wei(1, "gwei")
+
+            estimated_gas = await asyncio.to_thread(web3.eth.estimate_gas, {
+                "to": self.BRIDGE_ROUTER_ADDRESS,
+                "from": address,
+                "data": calldata,
+                "value": 0,
+            })
 
             tx = {
                 "to": self.BRIDGE_ROUTER_ADDRESS,
                 "from": address,
                 "data": calldata,
                 "value": 0,
-                "gas": 1500000,
+                "gas": int(estimated_gas * 1.2),
                 "maxFeePerGas": int(max_fee),
                 "maxPriorityFeePerGas": int(max_priority_fee),
                 "nonce": web3.eth.get_transaction_count(address, "pending"),
@@ -342,7 +363,7 @@ class Helios:
             signed_tx = web3.eth.account.sign_transaction(tx, account)
             raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             tx_hash = web3.to_hex(raw_tx)
-            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=600)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
 
             return tx_hash, block_number
@@ -398,7 +419,7 @@ class Helios:
             signed_tx = web3.eth.account.sign_transaction(tx, account)
             raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             tx_hash = web3.to_hex(raw_tx)
-            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=600)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
 
             return tx_hash, block_number
