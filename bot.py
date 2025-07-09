@@ -26,16 +26,16 @@ class Helios:
         }
         self.BASE_API = "https://testnet-api.helioschain.network/api"
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
-        self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
-        self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
-        self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
-        self.DESTINATION_TOKEN = [
+        self.HELIOS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
+        self.BRIDGE_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000900"
+        self.DELEGATE_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000800"
+        self.DEST_TOKENS = [
             { "Ticker": "Sepolia", "ChainId": 11155111 },
             { "Ticker": "Fuji", "ChainId": 43113 },
             { "Ticker": "BSC Testnet", "ChainId": 97 },
             # { "Ticker": "Amoy", "ChainId": 80002 }
         ]
-        self.VALIDATATOR_CONTRACT_ADDRESS = [
+        self.VALIDATATORS = [
             # {"Moniker": "Helios-Hedge", "Contract Address": "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"},
             # {"Moniker": "Helios-Peer", "Contract Address": "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"},
             {"Moniker": "Helios-Unity", "Contract Address": "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"},
@@ -243,18 +243,25 @@ class Helios:
                     await asyncio.sleep(3)
                     continue
                 raise Exception(f"Failed to Connect to RPC: {str(e)}")
+            
+    async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
+        for attempt in range(retries):
+            await asyncio.sleep(5)
+            try:
+                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+                return receipt
+            except (Exception, TransactionNotFound) as e:
+                if attempt < retries:
+                    continue
+                raise Exception("Transaction Receipt Not Found.")
         
     async def get_token_balance(self, address: str, contract_address: str, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
-            if contract_address == "HLS":
-                balance = web3.eth.get_balance(address)
-                decimals = 18
-            else:
-                token_contract = web3.eth.contract(address=web3.to_checksum_address(contract_address), abi=self.ERC20_CONTRACT_ABI)
-                balance = token_contract.functions.balanceOf(address).call()
-                decimals = token_contract.functions.decimals().call()
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(contract_address), abi=self.ERC20_CONTRACT_ABI)
+            balance = token_contract.functions.balanceOf(address).call()
+            decimals = token_contract.functions.decimals().call()
 
             token_balance = balance / (10 ** decimals)
 
@@ -265,27 +272,6 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None
-
-    def pad_hex(self, value, length=64):
-        return hex(value)[2:].zfill(length)
-
-    def encode_hex_as_string(self, string, length=32):
-        return string.lower()[2:].rjust(length * 2, '0')
-
-    def encode_string_as_bytes(self, string, length=64):
-        hex_str = string.encode('utf-8').hex()
-        return hex_str.ljust(length * 2, '0')
-    
-    async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
-        for attempt in range(retries):
-            await asyncio.sleep(5)
-            try:
-                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
-                return receipt
-            except (Exception, TransactionNotFound) as e:
-                if attempt < retries:
-                    continue
-                raise Exception("Transaction receipt not found after maximum retries.")
     
     async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, use_proxy: bool):
         try:
@@ -349,15 +335,15 @@ class Helios:
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
-            await self.approving_token(account, address, self.BRIDGE_ROUTER_ADDRESS, self.HLS_CONTRACT_ADDRESS, use_proxy)
+            await self.approving_token(account, address, self.BRIDGE_CONTRACT_ADDRESS, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
             
             bridge_amount = web3.to_wei(self.bridge_amount, "ether")
             estimated_fees = int(bridge_amount * 0.01)
 
-            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_CONTRACT_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
             bridge_data = token_contract.functions.sendToChain(
-                dest_chain_id, address, self.HLS_CONTRACT_ADDRESS, bridge_amount, estimated_fees
+                dest_chain_id, address, self.HELIOS_CONTRACT_ADDRESS, bridge_amount, estimated_fees
             )
 
             max_priority_fee = web3.to_wei(1.111, "gwei")
@@ -390,7 +376,7 @@ class Helios:
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
-            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.DELEGATE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.DELEGATE_CONTRACT_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
             delegate_amount = web3.to_wei(self.delegate_amount, "ether")
 
@@ -412,7 +398,7 @@ class Helios:
             signed_tx = web3.eth.account.sign_transaction(delegate_tx, account)
             raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             tx_hash = web3.to_hex(raw_tx)
-            receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
 
             return tx_hash, block_number
@@ -930,9 +916,9 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.bridge_count}{Style.RESET_ALL}                                   "
             )
 
-            balance = await self.get_token_balance(address, "HLS", use_proxy)
+            balance = await self.get_token_balance(address, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
 
-            destination = random.choice(self.DESTINATION_TOKEN)
+            destination = random.choice(self.DEST_TOKENS)
             ticker = destination["Ticker"]
             dest_chain_id = destination["ChainId"]
 
@@ -970,11 +956,11 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.delegate_count}{Style.RESET_ALL}                                   "
             )
 
-            validators = random.choice(self.VALIDATATOR_CONTRACT_ADDRESS)
+            validators = random.choice(self.VALIDATATORS)
             moniker = validators["Moniker"]
             contract_address = validators["Contract Address"]
 
-            balance = await self.get_token_balance(address, "HLS", use_proxy)
+            balance = await self.get_token_balance(address, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
 
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
