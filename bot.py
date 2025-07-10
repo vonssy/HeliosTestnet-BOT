@@ -86,6 +86,7 @@ class Helios:
         self.proxy_index = 0
         self.account_proxies = {}
         self.access_tokens = {}
+        self.used_nonce = {}
         self.bridge_count = 0
         self.bridge_amount = 0
         self.delegate_count = 0
@@ -246,14 +247,28 @@ class Helios:
             
     async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
         for attempt in range(retries):
-            await asyncio.sleep(5)
             try:
                 receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
                 return receipt
             except (Exception, TransactionNotFound) as e:
                 if attempt < retries:
+                    await asyncio.sleep(5)
                     continue
                 raise Exception("Transaction Receipt Not Found.")
+            
+    async def send_raw_transaction_with_retries(self, account, web3, tx, retries=5):
+        for attempt in range(retries):
+            try:
+                signed_tx = web3.eth.account.sign_transaction(tx, account)
+                raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                tx_hash = web3.to_hex(raw_tx)
+
+                return tx_hash
+            except (Exception, TransactionNotFound) as e:
+                if attempt < retries:
+                    await asyncio.sleep(5)
+                    continue
+                raise Exception("Transaction Hash Not Found.")
         
     async def get_token_balance(self, address: str, contract_address: str, use_proxy: bool):
         try:
@@ -297,15 +312,14 @@ class Helios:
                     "gas": 1500000,
                     "maxFeePerGas": int(max_fee),
                     "maxPriorityFeePerGas": int(max_priority_fee),
-                    "nonce": web3.eth.get_transaction_count(address, "pending"),
+                    "nonce": self.used_nonce[address],
                     "chainId": web3.eth.chain_id,
                 })
 
-                signed_tx = web3.eth.account.sign_transaction(approve_tx, account)
-                raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
-                tx_hash = web3.to_hex(raw_tx)
+                tx_hash = await self.send_raw_transaction_with_retries(account, web3, approve_tx)
                 receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
                 block_number = receipt.blockNumber
+                self.used_nonce[address] += 1
                 
                 explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
                 
@@ -346,23 +360,23 @@ class Helios:
                 dest_chain_id, address, self.HELIOS_CONTRACT_ADDRESS, bridge_amount, estimated_fees
             )
 
+            estimated_gas = bridge_data.estimate_gas({"from": address})
             max_priority_fee = web3.to_wei(1.111, "gwei")
             max_fee = max_priority_fee
 
             bridge_tx = bridge_data.build_transaction({
                 "from": address,
-                "gas": 1500000,
+                "gas": int(estimated_gas * 1.2),
                 "maxFeePerGas": int(max_fee),
                 "maxPriorityFeePerGas": int(max_priority_fee),
-                "nonce": web3.eth.get_transaction_count(address, "pending"),
+                "nonce": self.used_nonce[address],
                 "chainId": web3.eth.chain_id
             })
 
-            signed_tx = web3.eth.account.sign_transaction(bridge_tx, account)
-            raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash = web3.to_hex(raw_tx)
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, bridge_tx)
             receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
+            self.used_nonce[address] += 1
 
             return tx_hash, block_number
         except Exception as e:
@@ -391,15 +405,14 @@ class Helios:
                 "gas": int(estimated_gas * 1.2),
                 "maxFeePerGas": int(max_fee),
                 "maxPriorityFeePerGas": int(max_priority_fee),
-                "nonce": web3.eth.get_transaction_count(address, "pending"),
+                "nonce": self.used_nonce[address],
                 "chainId": web3.eth.chain_id
             })
 
-            signed_tx = web3.eth.account.sign_transaction(delegate_tx, account)
-            raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            tx_hash = web3.to_hex(raw_tx)
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, delegate_tx)
             receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
+            self.used_nonce[address] += 1
 
             return tx_hash, block_number
         except Exception as e:
@@ -988,6 +1001,8 @@ class Helios:
     async def process_accounts(self, account: str, address: str, option: int, use_proxy: bool, rotate_proxy: bool):
         logined = await self.process_user_login(account, address, use_proxy, rotate_proxy)
         if logined:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+            self.used_nonce[address] = web3.eth.get_transaction_count(address, "pending")
 
             if option == 1:
                 await self.process_option_1(address, use_proxy)
