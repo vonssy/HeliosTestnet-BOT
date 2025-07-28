@@ -1,8 +1,8 @@
 # Helios Testnet BOT
 Helios Testnet BOT
 
-- Register Here : [Helios Testnet](https://testnet.helioschain.network/?code=CHAIN-TITAN-879)
-- Use Code `CHAIN-TITAN-879`
+- Register Here : [Helios Testnet](https://testnet.helioschain.network/?code=CHRONOS-01567)
+- Use Code `CHRONOS-01567`
 - Connect Discord Account
 
 ## Features
