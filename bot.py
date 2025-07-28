@@ -856,9 +856,7 @@ class Helios:
             )
 
     async def process_option_1(self, address: str, use_proxy: bool):
-        proxy = self.get_next_proxy_for_account(address) if use_proxy else None
-
-        check = await self.check_eligibility(address, proxy)
+        check = await self.check_eligibility(address, use_proxy)
         if check and check.get("success", False):
             is_eligible = check.get("isEligible", False)
 
@@ -878,7 +876,7 @@ class Helios:
                         f"{Fore.GREEN + Style.BRIGHT} Capctha Turnstile Solved Successfully{Style.RESET_ALL}"
                     )
 
-                    request = await self.request_faucet(address, turnstile_token, proxy)
+                    request = await self.request_faucet(address, turnstile_token, use_proxy)
                     if request and request.get("success", False):
                         self.log(
                             f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
