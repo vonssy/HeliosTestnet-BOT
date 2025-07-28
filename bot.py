@@ -3,27 +3,17 @@ from web3.exceptions import TransactionNotFound
 from eth_utils import to_hex
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from aiohttp import ClientResponseError, ClientSession, ClientTimeout
+from aiohttp import ClientResponseError, ClientSession, ClientTimeout, BasicAuth
 from aiohttp_socks import ProxyConnector
 from fake_useragent import FakeUserAgent
 from datetime import datetime
 from colorama import *
-import asyncio, random, json, os, pytz
+import asyncio, random, json, re, os, pytz
 
 wib = pytz.timezone('Asia/Jakarta')
 
 class Helios:
     def __init__(self) -> None:
-        self.headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Origin": "https://testnet.helioschain.network",
-            "Referer": "https://testnet.helioschain.network/",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-site",
-            "User-Agent": FakeUserAgent().random
-        }
         self.BASE_API = "https://testnet-api.helioschain.network/api"
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
         self.HELIOS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
@@ -31,15 +21,13 @@ class Helios:
         self.DELEGATE_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.DEST_TOKENS = [
             { "Ticker": "Sepolia", "ChainId": 11155111 },
-            { "Ticker": "Fuji", "ChainId": 43113 },
-            { "Ticker": "BSC Testnet", "ChainId": 97 },
-            # { "Ticker": "Amoy", "ChainId": 80002 }
+            { "Ticker": "BSC Testnet", "ChainId": 97 }
         ]
         self.VALIDATATORS = [
             # {"Moniker": "Helios-Hedge", "Contract Address": "0x007a1123a54cdD9bA35AD2012DB086b9d8350A5f"},
-            # {"Moniker": "Helios-Peer", "Contract Address": "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"},
+            {"Moniker": "Helios-Peer", "Contract Address": "0x72a9B3509B19D9Dbc2E0Df71c4A6451e8a3DD705"},
             {"Moniker": "Helios-Unity", "Contract Address": "0x7e62c5e7Eba41fC8c25e605749C476C0236e0604"},
-            # {"Moniker": "Helios-Supra", "Contract Address": "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"},
+            {"Moniker": "Helios-Supra", "Contract Address": "0xa75a393FF3D17eA7D9c9105d5459769EA3EAEf8D"},
             {"Moniker": "Helios-Inter", "Contract Address": "0x882f8A95409C127f0dE7BA83b4Dfa0096C3D8D79"}
         ]
         self.ERC20_CONTRACT_ABI = json.loads('''[
@@ -82,6 +70,7 @@ class Helios:
         self.PAGE_URL = "https://testnet.helioschain.network"
         self.SITE_KEY = "0x4AAAAAABhz7Yc1no53_eWA"
         self.CAPTCHA_KEY = None
+        self.HEADERS = {}
         self.proxies = []
         self.proxy_index = 0
         self.account_proxies = {}
@@ -107,7 +96,7 @@ class Helios:
     def welcome(self):
         print(
             f"""
-        {Fore.GREEN + Style.BRIGHT}Helios{Fore.BLUE + Style.BRIGHT} Auto BOT
+        {Fore.GREEN + Style.BRIGHT}Helios Testnet{Fore.BLUE + Style.BRIGHT} Auto BOT
             """
             f"""
         {Fore.GREEN + Style.BRIGHT}Rey? {Fore.YELLOW + Style.BRIGHT}<INI WATERMARK>
@@ -133,7 +122,7 @@ class Helios:
         try:
             if use_proxy_choice == 1:
                 async with ClientSession(timeout=ClientTimeout(total=30)) as session:
-                    async with session.get("https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text") as response:
+                    async with session.get("https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies/http.txt") as response:
                         response.raise_for_status()
                         content = await response.text()
                         with open(filename, 'w') as f:
@@ -181,6 +170,26 @@ class Helios:
         self.account_proxies[token] = proxy
         self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
         return proxy
+    
+    def build_proxy_config(self, proxy=None):
+        if not proxy:
+            return None, None, None
+
+        if proxy.startswith("socks"):
+            connector = ProxyConnector.from_url(proxy)
+            return connector, None, None
+
+        elif proxy.startswith("http"):
+            match = re.match(r"http://(.*?):(.*?)@(.*)", proxy)
+            if match:
+                username, password, host_port = match.groups()
+                clean_url = f"http://{host_port}"
+                auth = BasicAuth(username, password)
+                return None, clean_url, auth
+            else:
+                return None, proxy, None
+
+        raise Exception("Unsupported Proxy Type.")
     
     def generate_address(self, account: str):
         try:
@@ -245,30 +254,37 @@ class Helios:
                     continue
                 raise Exception(f"Failed to Connect to RPC: {str(e)}")
             
-    async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
-        for attempt in range(retries):
-            try:
-                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
-                return receipt
-            except (Exception, TransactionNotFound) as e:
-                if attempt < retries:
-                    await asyncio.sleep(5)
-                    continue
-                raise Exception("Transaction Receipt Not Found.")
-            
     async def send_raw_transaction_with_retries(self, account, web3, tx, retries=5):
         for attempt in range(retries):
             try:
                 signed_tx = web3.eth.account.sign_transaction(tx, account)
                 raw_tx = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
                 tx_hash = web3.to_hex(raw_tx)
-
                 return tx_hash
-            except (Exception, TransactionNotFound) as e:
-                if attempt < retries:
-                    await asyncio.sleep(5)
-                    continue
-                raise Exception("Transaction Hash Not Found.")
+            except TransactionNotFound:
+                pass
+            except Exception as e:
+                self.log(
+                    f"{Fore.CYAN + Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}] Send TX Error: {str(e)} {Style.RESET_ALL}"
+                )
+            await asyncio.sleep(2 ** attempt)
+        raise Exception("Transaction Hash Not Found After Maximum Retries")
+
+    async def wait_for_receipt_with_retries(self, web3, tx_hash, retries=5):
+        for attempt in range(retries):
+            try:
+                receipt = await asyncio.to_thread(web3.eth.wait_for_transaction_receipt, tx_hash, timeout=300)
+                return receipt
+            except TransactionNotFound:
+                pass
+            except Exception as e:
+                self.log(
+                    f"{Fore.CYAN + Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}] Wait for Receipt Error: {str(e)} {Style.RESET_ALL}"
+                )
+            await asyncio.sleep(2 ** attempt)
+        raise Exception("Transaction Receipt Not Found After Maximum Retries")
         
     async def get_token_balance(self, address: str, contract_address: str, use_proxy: bool):
         try:
@@ -288,7 +304,7 @@ class Helios:
             )
             return None
     
-    async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, use_proxy: bool):
+    async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, estimated_fees: float, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
             
@@ -296,7 +312,7 @@ class Helios:
             token_contract = web3.eth.contract(address=web3.to_checksum_address(contract_address), abi=self.ERC20_CONTRACT_ABI)
             decimals = token_contract.functions.decimals().call()
 
-            amount_to_wei = int(self.bridge_amount * (10 ** decimals))
+            amount_to_wei = int(self.bridge_amount * (10 ** decimals)) + estimated_fees
 
             allowance = token_contract.functions.allowance(address, spender).call()
             if allowance < amount_to_wei:
@@ -348,11 +364,11 @@ class Helios:
     async def perform_bridge(self, account: str, address: str, dest_chain_id: int, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
-
-            await self.approving_token(account, address, self.BRIDGE_CONTRACT_ADDRESS, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
             
             bridge_amount = web3.to_wei(self.bridge_amount, "ether")
-            estimated_fees = int(bridge_amount * 0.01)
+            estimated_fees = int(0.5 * (10 ** 18))
+
+            await self.approving_token(account, address, self.BRIDGE_CONTRACT_ADDRESS, self.HELIOS_CONTRACT_ADDRESS, estimated_fees, use_proxy)
 
             token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_CONTRACT_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
@@ -421,6 +437,75 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
             return None, None
+        
+    def print_bridge_question(self):
+        while True:
+            try:
+                bridge_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                if bridge_count > 0:
+                    self.bridge_count = bridge_count
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Bridge Count must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+        while True:
+            try:
+                bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                if bridge_amount > 0:
+                    self.bridge_amount = bridge_amount
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Bridge Amount must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+
+    def print_delegate_question(self):
+        while True:
+            try:
+                delegate_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Delegate Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                if delegate_count > 0:
+                    self.delegate_count = delegate_count
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Delegate Count must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+        while True:
+            try:
+                delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                if delegate_amount > 0:
+                    self.delegate_amount = delegate_amount
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+
+    def print_delay_question(self):
+        while True:
+            try:
+                min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                if min_delay >= 0:
+                    self.min_delay = min_delay
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+        while True:
+            try:
+                max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
+                if max_delay >= min_delay:
+                    self.max_delay = max_delay
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
          
     async def print_timer(self):
         for remaining in range(random.randint(self.min_delay, self.max_delay), 0, -1):
@@ -434,7 +519,7 @@ class Helios:
                 flush=True
             )
             await asyncio.sleep(1)
-        
+
     def print_question(self):
         while True:
             try:
@@ -460,161 +545,17 @@ class Helios:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, or 4).{Style.RESET_ALL}")
         
         if option == 2:
-            while True:
-                try:
-                    bridge_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
-                    if bridge_count > 0:
-                        self.bridge_count = bridge_count
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Bridge Count must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                    if bridge_amount > 0:
-                        self.bridge_amount = bridge_amount
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Bridge Amount must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if min_delay >= 0:
-                        self.min_delay = min_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if max_delay >= min_delay:
-                        self.max_delay = max_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+            self.print_bridge_question()
+            self.print_delay_question()
 
         elif option == 3:
-            while True:
-                try:
-                    delegate_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Delegate Count For Each Wallet -> {Style.RESET_ALL}").strip())
-                    if delegate_count > 0:
-                        self.delegate_count = delegate_count
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Delegate Count must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                    if delegate_amount > 0:
-                        self.delegate_amount = delegate_amount
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if min_delay >= 0:
-                        self.min_delay = min_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if max_delay >= min_delay:
-                        self.max_delay = max_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
+            self.print_delegate_question()
+            self.print_delay_question()
+            
         elif option == 4:
-            while True:
-                try:
-                    bridge_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Bridge Count For Each Wallet -> {Style.RESET_ALL}").strip())
-                    if bridge_count > 0:
-                        self.bridge_count = bridge_count
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Bridge Count must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                    if bridge_amount > 0:
-                        self.bridge_amount = bridge_amount
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Bridge Amount must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    delegate_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Delegate Count For Each Wallet -> {Style.RESET_ALL}").strip())
-                    if delegate_count > 0:
-                        self.delegate_count = delegate_count
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Delegate Count must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                    if delegate_amount > 0:
-                        self.delegate_amount = delegate_amount
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if min_delay >= 0:
-                        self.min_delay = min_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-            while True:
-                try:
-                    max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                    if max_delay >= min_delay:
-                        self.max_delay = max_delay
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
-                except ValueError:
-                    print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+            self.print_bridge_question()
+            self.print_delegate_question()
+            self.print_delay_question()
 
         while True:
             try:
@@ -649,13 +590,19 @@ class Helios:
 
         return option, choose, rotate
     
-    async def solve_cf_turnstile(self, proxy=None, retries=5):
+    async def solve_cf_turnstile(self, retries=5):
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy) if proxy else None
             try:
-                async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
+                async with ClientSession(timeout=ClientTimeout(total=60)) as session:
 
                     if self.CAPTCHA_KEY is None:
+                        self.log(
+                            f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
+                            f"{Fore.BLUE+Style.BRIGHT}Status  :{Style.RESET_ALL}"
+                            f"{Fore.RED+Style.BRIGHT}Turnstile Not Solved{Style.RESET_ALL}"
+                            f"{Fore.MAGENTA+Style.BRIGHT} - {Style.RESET_ALL}"
+                            f"{Fore.YELLOW+Style.BRIGHT}2Captcha Key Is None{Style.RESET_ALL}"
+                        )
                         return None
                     
                     url = f"http://2captcha.com/in.php?key={self.CAPTCHA_KEY}&method=turnstile&sitekey={self.SITE_KEY}&pageurl={self.PAGE_URL}"
@@ -664,6 +611,11 @@ class Helios:
                         result = await response.text()
 
                         if 'OK|' not in result:
+                            self.log(
+                                f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
+                                f"{Fore.BLUE+Style.BRIGHT}Message :{Style.RESET_ALL}"
+                                f"{Fore.YELLOW + Style.BRIGHT}{result}{Style.RESET_ALL}"
+                            )
                             await asyncio.sleep(5)
                             continue
 
@@ -699,22 +651,46 @@ class Helios:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
                     continue
+                self.log(
+                    f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
+                    f"{Fore.BLUE+Style.BRIGHT}Status  :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT}Turnstile Not Solved{Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT} - {Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT}{str(e)}{Style.RESET_ALL}"
+                )
                 return None
     
-    async def user_login(self, account: str, address: str, proxy=None, retries=5):
+    async def check_connection(self, proxy_url=None):
+        connector, proxy, proxy_auth = self.build_proxy_config(proxy_url)
+        try:
+            async with ClientSession(connector=connector, timeout=ClientTimeout(total=10)) as session:
+                async with session.get(url="https://api.ipify.org?format=json", proxy=proxy, proxy_auth=proxy_auth) as response:
+                    response.raise_for_status()
+                    return True
+        except (Exception, ClientResponseError) as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}Status    :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Connection Not 200 OK {Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None
+        
+    async def user_login(self, account: str, address: str, use_proxy: bool, retries=5):
         url = f"{self.BASE_API}/users/login"
         data = json.dumps(self.generate_payload(account, address))
         headers = {
-            **self.headers,
+            **self.HEADERS[address],
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
         await asyncio.sleep(3)
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy) if proxy else None
+            proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
+            connector, proxy, proxy_auth = self.build_proxy_config(proxy_url)
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=120)) as session:
-                    async with session.post(url=url, headers=headers, data=data) as response:
+                    async with session.post(url=url, headers=headers, data=data, proxy=proxy, proxy_auth=proxy_auth) as response:
                         response.raise_for_status()
                         return await response.json()
             except (Exception, ClientResponseError) as e:
@@ -728,21 +704,22 @@ class Helios:
 
         return None
     
-    async def check_eligibility(self, address: str, proxy=None, retries=5):
+    async def check_eligibility(self, address: str, use_proxy: bool, retries=5):
         url = f"{self.BASE_API}/faucet/check-eligibility"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet"})
         headers = {
-            **self.headers,
+            **self.HEADERS[address],
             "Authorization": f"Bearer {self.access_tokens[address]}",
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
         await asyncio.sleep(3)
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy) if proxy else None
+            proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
+            connector, proxy, proxy_auth = self.build_proxy_config(proxy_url)
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=120)) as session:
-                    async with session.post(url=url, headers=headers, data=data) as response:
+                    async with session.post(url=url, headers=headers, data=data, proxy=proxy, proxy_auth=proxy_auth) as response:
                         response.raise_for_status()
                         return await response.json()
             except (Exception, ClientResponseError) as e:
@@ -758,20 +735,21 @@ class Helios:
 
         return None
     
-    async def request_faucet(self, address: str, turnstile_token: str, proxy=None, retries=5):
+    async def request_faucet(self, address: str, turnstile_token: str, use_proxy: bool, retries=5):
         url = f"{self.BASE_API}/faucet/request"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet", "amount":1, "turnstileToken":turnstile_token})
         headers = {
-            **self.headers,
+            **self.HEADERS[address],
             "Authorization": f"Bearer {self.access_tokens[address]}",
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy) if proxy else None
+            proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
+            connector, proxy, proxy_auth = self.build_proxy_config(proxy_url)
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=120)) as session:
-                    async with session.post(url=url, headers=headers, data=data) as response:
+                    async with session.post(url=url, headers=headers, data=data, proxy=proxy, proxy_auth=proxy_auth) as response:
                         response.raise_for_status()
                         return await response.json()
             except (Exception, ClientResponseError) as e:
@@ -788,15 +766,28 @@ class Helios:
 
         return None
     
-    async def process_user_login(self, account: str, address: str, use_proxy: bool, rotate_proxy: bool):
+    async def process_check_connection(self, address: str, use_proxy: bool, rotate_proxy: bool):
         while True:
             proxy = self.get_next_proxy_for_account(address) if use_proxy else None
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}Proxy     :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {proxy} {Style.RESET_ALL}"
+                f"{Fore.WHITE + Style.BRIGHT} {proxy} {Style.RESET_ALL}"
             )
 
-            login = await self.user_login(account, address, proxy)
+            is_valid = await self.check_connection(proxy)
+            if not is_valid:
+                if rotate_proxy:
+                    proxy = self.rotate_proxy_for_account(address)
+                    continue
+
+                return False
+            
+            return True
+    
+    async def process_user_login(self, account: str, address: str, use_proxy: bool, rotate_proxy: bool):
+        is_valid = await self.process_check_connection(address, use_proxy, rotate_proxy)
+        if is_valid:
+            login = await self.user_login(account, address, use_proxy)
             if login and login.get("success", False):
                 self.access_tokens[address] = login["token"]
 
@@ -806,22 +797,12 @@ class Helios:
                 )
                 return True
 
-            if rotate_proxy:
-                self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}Status    :{Style.RESET_ALL}"
-                    f"{Fore.RED+Style.BRIGHT} Login Failed, {Style.RESET_ALL}"
-                    f"{Fore.YELLOW+Style.BRIGHT} Rotating Proxy... {Style.RESET_ALL}"
-                )
-                proxy = self.rotate_proxy_for_account(address)
-                await asyncio.sleep(5)
-                continue
-
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}Status    :{Style.RESET_ALL}"
                 f"{Fore.RED+Style.BRIGHT} Login Failed {Style.RESET_ALL}"
             )
             return False
-    
+        
     async def process_perform_bridge(self, account: str, address: str, dest_chain_id: int, use_proxy: bool):
         tx_hash, block_number = await self.perform_bridge(account, address, dest_chain_id, use_proxy)
         if tx_hash and block_number:
@@ -889,7 +870,7 @@ class Helios:
                     f"{Fore.YELLOW+Style.BRIGHT}Solving Captcha Turnstile...{Style.RESET_ALL}"
                 )
 
-                turnstile_token = await self.solve_cf_turnstile(proxy)
+                turnstile_token = await self.solve_cf_turnstile()
                 if turnstile_token:
                     self.log(
                         f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
@@ -904,13 +885,6 @@ class Helios:
                             f"{Fore.BLUE+Style.BRIGHT}Status  :{Style.RESET_ALL}"
                             f"{Fore.GREEN + Style.BRIGHT} 1 HLS Faucet Claimed Successfully {Style.RESET_ALL}"
                         )
-
-                else:
-                    self.log(
-                        f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
-                        f"{Fore.BLUE+Style.BRIGHT}Message :{Style.RESET_ALL}"
-                        f"{Fore.RED + Style.BRIGHT} Capctha Turnstile Not Solved {Style.RESET_ALL}"
-                    )
 
             else:
                 self.log(
@@ -934,6 +908,7 @@ class Helios:
             destination = random.choice(self.DEST_TOKENS)
             ticker = destination["Ticker"]
             dest_chain_id = destination["ChainId"]
+            estimated_fee = 0.5
 
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Option   :{Style.RESET_ALL}"
@@ -947,8 +922,14 @@ class Helios:
                 f"{Fore.CYAN+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {self.bridge_amount} HLS {Style.RESET_ALL}"
             )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Est. Fee :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {estimated_fee} HLS {Style.RESET_ALL}"
+            )
 
-            if not balance or balance <= self.bridge_amount:
+            required = self.bridge_amount + estimated_fee
+
+            if not balance or balance <= required:
                 self.log(
                     f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} Insufficient HLS Token Balance {Style.RESET_ALL}"
@@ -1002,6 +983,13 @@ class Helios:
         logined = await self.process_user_login(account, address, use_proxy, rotate_proxy)
         if logined:
             web3 = await self.get_web3_with_check(address, use_proxy)
+            if not web3:
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Status    :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Web3 Not Connected {Style.RESET_ALL}"
+                )
+                return
+            
             self.used_nonce[address] = web3.eth.get_transaction_count(address, "pending")
 
             if option == 1:
@@ -1066,6 +1054,17 @@ class Helios:
                                 f"{Fore.RED + Style.BRIGHT} Invalid Private Key or Library Version Not Supported {Style.RESET_ALL}"
                             )
                             continue
+
+                        self.HEADERS[address] = {
+                            "Accept": "application/json, text/plain, */*",
+                            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                            "Origin": "https://testnet.helioschain.network",
+                            "Referer": "https://testnet.helioschain.network/",
+                            "Sec-Fetch-Dest": "empty",
+                            "Sec-Fetch-Mode": "cors",
+                            "Sec-Fetch-Site": "same-site",
+                            "User-Agent": FakeUserAgent().random
+                        }
 
                         await self.process_accounts(account, address, option, use_proxy_choice, rotate_proxy)
                         await asyncio.sleep(3)
