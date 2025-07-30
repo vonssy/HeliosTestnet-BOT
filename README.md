@@ -13,8 +13,9 @@ Helios Testnet BOT
   - Auto Run Without Proxy - `Choose 3`
   - Auto Rotate Invalid Proxies - `y` or `n`
   - Auto Claim HLS Faucet - `Need 2captcha key`
-  - Auto Bridge HLS to Sepolia
-  - Auto Delegate HLS to Validator
+  - Auto Bridge HLS
+  - Auto Delegate HLS
+  - Auto Deploy Contract
   - Multi Accounts
 
 ### Note: Other features will be updated soon.
