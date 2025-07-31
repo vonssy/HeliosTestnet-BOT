@@ -20,9 +20,12 @@ class Helios:
     def __init__(self) -> None:
         self.BASE_API = "https://testnet-api.helioschain.network/api"
         self.RPC_URL = "https://testnet1.helioschainlabs.org/"
-        self.HELIOS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
-        self.BRIDGE_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000900"
-        self.DELEGATE_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000800"
+        self.HLS_CONTRACT_ADDRESS = "0xD4949664cD82660AaE99bEdc034a0deA8A0bd517"
+        self.WETH_CONTRACT_ADDRESS = "0x80b5a32E4F032B2a058b4F29EC95EEfEEB87aDcd"
+        self.WBNB_CONTRACT_ADDRESS = "0xd567B3d7B8FE3C79a1AD8dA978812cfC4Fa05e75"
+        self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
+        self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
+        self.REWARDS_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000801"
         self.DEST_TOKENS = [
             { "Ticker": "Sepolia", "ChainId": 11155111 },
             { "Ticker": "BSC Testnet", "ChainId": 97 }
@@ -69,6 +72,18 @@ class Helios:
                 "outputs": [
                     { "internalType": "bool", "name": "success", "type": "bool" }
                 ]
+            },
+            {
+                "name": "claimRewards",
+                "type": "function",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    { "internalType": "address", "name": "delegatorAddress", "type": "address" },
+                    { "internalType": "uint32", "name": "maxRetrieve", "type": "uint32" }
+                ],
+                "outputs": [
+                    { "internalType": "bool", "name": "success", "type": "bool" }
+                ]
             }
         ]
         self.PAGE_URL = "https://testnet.helioschain.network"
@@ -83,7 +98,9 @@ class Helios:
         self.bridge_count = 0
         self.bridge_amount = 0
         self.delegate_count = 0
-        self.delegate_amount = 0
+        self.hls_delegate_amount = 0
+        self.weth_delegate_amount = 0
+        self.wbnb_delegate_amount = 0
         self.deploy_count = 0
         self.min_delay = 0
         self.max_delay = 0
@@ -240,6 +257,28 @@ class Helios:
         except Exception as e:
             return None
         
+    def generate_random_asset(self):
+        asset = random.choice([
+            self.HLS_CONTRACT_ADDRESS,
+            self.WETH_CONTRACT_ADDRESS,
+            self.WBNB_CONTRACT_ADDRESS
+        ])
+
+        if asset == self.HLS_CONTRACT_ADDRESS:
+            denom = "ahelios"
+            ticker = "HLS"
+            amount = self.hls_delegate_amount
+        elif asset == self.WETH_CONTRACT_ADDRESS:
+            denom = "hyperion-11155111-0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9"
+            ticker = "WETH"
+            amount = self.weth_delegate_amount
+        else:
+            denom = "hyperion-97-0xC689BF5a007F44410676109f8aa8E3562da1c9Ba"
+            ticker = "WBNB"
+            amount = self.wbnb_delegate_amount
+
+        return asset, ticker, denom, amount
+        
     def generate_raw_token(self):
         token_name = f"Token{random.randint(0, 9999)}"
         token_symbol = f"TKN{random.randint(0, 999)}"
@@ -381,12 +420,12 @@ class Helios:
             bridge_amount = web3.to_wei(self.bridge_amount, "ether")
             estimated_fees = int(0.5 * (10 ** 18))
 
-            await self.approving_token(account, address, self.BRIDGE_CONTRACT_ADDRESS, self.HELIOS_CONTRACT_ADDRESS, estimated_fees, use_proxy)
+            await self.approving_token(account, address, self.BRIDGE_ROUTER_ADDRESS, self.HLS_CONTRACT_ADDRESS, estimated_fees, use_proxy)
 
-            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_CONTRACT_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
             bridge_data = token_contract.functions.sendToChain(
-                dest_chain_id, address, self.HELIOS_CONTRACT_ADDRESS, bridge_amount, estimated_fees
+                dest_chain_id, address, self.HLS_CONTRACT_ADDRESS, bridge_amount, estimated_fees
             )
 
             estimated_gas = bridge_data.estimate_gas({"from": address})
@@ -415,15 +454,15 @@ class Helios:
             )
             return None, None
         
-    async def perform_delegate(self, account: str, address: str, contract_address: str, use_proxy: bool):
+    async def perform_delegate(self, account: str, address: str, contract_address: str, denom: str, delegate_amount: float, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
 
-            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.DELEGATE_CONTRACT_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.DELEGATE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
-            delegate_amount = web3.to_wei(self.delegate_amount, "ether")
+            amount = web3.to_wei(delegate_amount, "ether")
 
-            delegate_data = token_contract.functions.delegate(address, contract_address, delegate_amount, "ahelios")
+            delegate_data = token_contract.functions.delegate(address, contract_address, amount, denom)
 
             estimated_gas = delegate_data.estimate_gas({"from": address})
             max_priority_fee = web3.to_wei(2.5, "gwei")
@@ -439,6 +478,40 @@ class Helios:
             })
 
             tx_hash = await self.send_raw_transaction_with_retries(account, web3, delegate_tx)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
+            block_number = receipt.blockNumber
+            self.used_nonce[address] += 1
+
+            return tx_hash, block_number
+        except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None, None
+        
+    async def perform_claim_rewards(self, account: str, address: str, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.REWARDS_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+
+            claim_data = token_contract.functions.claimRewards(address, 10)
+
+            estimated_gas = claim_data.estimate_gas({"from": address})
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
+
+            claim_tx = claim_data.build_transaction({
+                "from": address,
+                "gas": int(estimated_gas * 1.2),
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
+                "nonce": self.used_nonce[address],
+                "chainId": web3.eth.chain_id
+            })
+
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, claim_tx)
             receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
             self.used_nonce[address] += 1
@@ -550,7 +623,7 @@ class Helios:
 
         while True:
             try:
-                bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
+                bridge_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Bridge Amount (HLS) -> {Style.RESET_ALL}").strip())
                 if bridge_amount > 0:
                     self.bridge_amount = bridge_amount
                     break
@@ -573,9 +646,31 @@ class Helios:
 
         while True:
             try:
-                delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount [1 or 0.01 or 0.001, etc in decimals] -> {Style.RESET_ALL}").strip())
-                if delegate_amount > 0:
-                    self.delegate_amount = delegate_amount
+                hls_delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount (HLS) -> {Style.RESET_ALL}").strip())
+                if hls_delegate_amount > 0:
+                    self.hls_delegate_amount = hls_delegate_amount
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+    
+        while True:
+            try:
+                weth_delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount (WETH) -> {Style.RESET_ALL}").strip())
+                if weth_delegate_amount > 0:
+                    self.weth_delegate_amount = weth_delegate_amount
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
+    
+        while True:
+            try:
+                wbnb_delegate_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Delegate Amount (WBNB) -> {Style.RESET_ALL}").strip())
+                if wbnb_delegate_amount > 0:
+                    self.wbnb_delegate_amount = wbnb_delegate_amount
                     break
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Delegate Amount must be > 0.{Style.RESET_ALL}")
@@ -635,26 +730,28 @@ class Helios:
             try:
                 print(f"{Fore.GREEN + Style.BRIGHT}Select Option:{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}1. Claim HLS Faucet{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate HLS{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}4. Deploy Contract{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}5. Run All Features{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS Funds{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate Random Validators{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}4. Claim Delegate Rewards{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}5. Deploy Token Contract{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}6. Run All Features{Style.RESET_ALL}")
                 option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4/5] -> {Style.RESET_ALL}").strip())
 
-                if option in [1, 2, 3, 4, 5]:
+                if option in [1, 2, 3, 4, 5, 6]:
                     option_type = (
                         "Claim HLS Faucet" if option == 1 else 
-                        "Bridge HLS" if option == 2 else 
-                        "Delegate HLS" if option == 3 else 
-                        "Deploy Contract" if option == 4 else 
+                        "Bridge HLS Funds" if option == 2 else 
+                        "Delegate Random Validators" if option == 3 else 
+                        "Claim Delegate Rewards" if option == 4 else 
+                        "Deploy Token Contract" if option == 5 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, or 4.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, or 6.{Style.RESET_ALL}")
             except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, or 4).{Style.RESET_ALL}")
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, or 6).{Style.RESET_ALL}")
         
         if option == 2:
             self.print_bridge_question()
@@ -664,11 +761,11 @@ class Helios:
             self.print_delegate_question()
             self.print_delay_question()
 
-        elif option == 4:
+        elif option == 5:
             self.print_deploy_question()
             self.print_delay_question()
             
-        elif option == 5:
+        elif option == 6:
             self.print_bridge_question()
             self.print_delegate_question()
             self.print_deploy_question()
@@ -946,8 +1043,34 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
-    async def process_perform_delegate(self, account: str, address: str, contract_address: str, use_proxy: bool):
-        tx_hash, block_number = await self.perform_delegate(account, address, contract_address, use_proxy)
+    async def process_perform_delegate(self, account: str, address: str, contract_address: str, denom: str, amount: float, use_proxy: bool):
+        tx_hash, block_number = await self.perform_delegate(account, address, contract_address, denom, amount, use_proxy)
+        if tx_hash and block_number:
+            explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+            )
+        else:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
+            )
+
+    async def process_perform_claim_rewards(self, account: str, address: str, use_proxy: bool):
+        tx_hash, block_number = await self.perform_claim_rewards(account, address, use_proxy)
         if tx_hash and block_number:
             explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
             self.log(
@@ -1048,7 +1171,7 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.bridge_count}{Style.RESET_ALL}                                   "
             )
 
-            balance = await self.get_token_balance(address, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
+            balance = await self.get_token_balance(address, self.HLS_CONTRACT_ADDRESS, use_proxy)
 
             destination = random.choice(self.DEST_TOKENS)
             ticker = destination["Ticker"]
@@ -1095,36 +1218,48 @@ class Helios:
                 f"{Fore.WHITE+Style.BRIGHT}{self.delegate_count}{Style.RESET_ALL}                                   "
             )
 
+            asset, ticker, denom, amount = self.generate_random_asset()
+
             validators = random.choice(self.VALIDATATORS)
             moniker = validators["Moniker"]
             contract_address = validators["Contract Address"]
 
-            balance = await self.get_token_balance(address, self.HELIOS_CONTRACT_ADDRESS, use_proxy)
+            balance = await self.get_token_balance(address, asset, use_proxy)
 
             self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Asset    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {ticker} {Style.RESET_ALL}"
+            )
+            self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {balance} HLS {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {balance} {ticker} {Style.RESET_ALL}"
             )
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {self.delegate_amount} HLS {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {amount} {ticker} {Style.RESET_ALL}"
             )
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Validator:{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {moniker} {Style.RESET_ALL}"
             )
 
-            if not balance or balance <= self.delegate_amount:
+            if not balance or balance <= amount:
                 self.log(
                     f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
-                    f"{Fore.YELLOW+Style.BRIGHT} Insufficient HLS Token Balance {Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Insufficient {ticker} Token Balance {Style.RESET_ALL}"
                 )
-                return
+                continue
             
-            await self.process_perform_delegate(account, address, contract_address, use_proxy)
+            await self.process_perform_delegate(account, address, contract_address, denom, amount, use_proxy)
             await self.print_timer()
 
     async def process_option_4(self, account: str, address: str, use_proxy: bool):
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Rewards   :{Style.RESET_ALL}                       ")
+        
+        await self.process_perform_claim_rewards(account, address, use_proxy)
+        await self.print_timer()
+
+    async def process_option_5(self, account: str, address: str, use_proxy: bool):
         self.log(f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}                       ")
 
         for i in range(self.deploy_count):
@@ -1182,7 +1317,10 @@ class Helios:
             elif option == 4:
                 await self.process_option_4(account, address, use_proxy)
 
-            else:
+            elif option == 5:
+                await self.process_option_5(account, address, use_proxy)
+
+            elif option == 6:
                 await self.process_option_1(address, use_proxy)
                 await asyncio.sleep(5)
 
@@ -1193,6 +1331,9 @@ class Helios:
                 await asyncio.sleep(5)
                 
                 await self.process_option_4(account, address, use_proxy)
+                await asyncio.sleep(5)
+                
+                await self.process_option_5(account, address, use_proxy)
                 await asyncio.sleep(5)
 
     async def main(self):
