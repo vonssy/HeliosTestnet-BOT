@@ -16,6 +16,7 @@ Helios Testnet BOT
   - Auto Bridge HLS Funds
   - Auto Delegate Random Validators
   - Auto Claim Delegate Rewards
+  - Auto Vote Governance Proposal
   - Auto Deploy Token Contract
   - Multi Accounts
 

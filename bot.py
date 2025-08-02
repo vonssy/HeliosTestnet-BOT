@@ -26,6 +26,7 @@ class Helios:
         self.BRIDGE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000900"
         self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.REWARDS_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000801"
+        self.PROPOSAL_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000805"
         self.DEST_TOKENS = [
             { "Ticker": "Sepolia", "ChainId": 11155111 },
             { "Ticker": "BSC Testnet", "ChainId": 97 }
@@ -84,12 +85,27 @@ class Helios:
                 "outputs": [
                     { "internalType": "bool", "name": "success", "type": "bool" }
                 ]
+            },
+            {
+                "name": "vote",
+                "type": "function",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    { "internalType": "address", "name": "voter", "type": "address" },
+                    { "internalType": "uint64", "name": "proposalId", "type": "uint64" },
+                    { "internalType": "enum VoteOption", "name": "option", "type": "uint8" },
+                    { "internalType": "string", "name": "metadata", "type": "string" }
+                ],
+                "outputs": [
+                    { "internalType": "bool", "name": "success", "type": "bool" }
+                ]
             }
         ]
         self.PAGE_URL = "https://testnet.helioschain.network"
         self.SITE_KEY = "0x4AAAAAABhz7Yc1no53_eWA"
         self.CAPTCHA_KEY = None
-        self.HEADERS = {}
+        self.BASE_HEADERS = {}
+        self.PORTAL_HEADERS = {}
         self.proxies = []
         self.proxy_index = 0
         self.account_proxies = {}
@@ -280,8 +296,9 @@ class Helios:
         return asset, ticker, denom, amount
         
     def generate_raw_token(self):
-        token_name = f"Token{random.randint(0, 9999)}"
-        token_symbol = f"TKN{random.randint(0, 999)}"
+        numbers = random.randint(0, 99999)
+        token_name = f"Token{numbers}"
+        token_symbol = f"T{numbers}"
         raw_supply = random.randint(1000, 1_000_000)
         total_supply = raw_supply * (10 ** 18)
 
@@ -317,7 +334,7 @@ class Helios:
                 pass
             except Exception as e:
                 self.log(
-                    f"{Fore.CYAN + Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                    f"{Fore.CYAN + Style.BRIGHT}   Message  :{Style.RESET_ALL}"
                     f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}] Send TX Error: {str(e)} {Style.RESET_ALL}"
                 )
             await asyncio.sleep(2 ** attempt)
@@ -332,7 +349,7 @@ class Helios:
                 pass
             except Exception as e:
                 self.log(
-                    f"{Fore.CYAN + Style.BRIGHT}   Message :{Style.RESET_ALL}"
+                    f"{Fore.CYAN + Style.BRIGHT}   Message  :{Style.RESET_ALL}"
                     f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}] Wait for Receipt Error: {str(e)} {Style.RESET_ALL}"
                 )
             await asyncio.sleep(2 ** attempt)
@@ -392,19 +409,19 @@ class Helios:
                 explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
                 
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}   Approve :{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}   Approve  :{Style.RESET_ALL}"
                     f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
                 )
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}   Block   :{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
                     f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
                 )
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}   Tx Hash :{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
                     f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
                 )
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}   Explorer:{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
                     f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
                 )
                 await asyncio.sleep(10)
@@ -512,6 +529,42 @@ class Helios:
             })
 
             tx_hash = await self.send_raw_transaction_with_retries(account, web3, claim_tx)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
+            block_number = receipt.blockNumber
+            self.used_nonce[address] += 1
+
+            return tx_hash, block_number
+        except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None, None
+        
+    async def perform_vote_proposal(self, account: str, address: str, proposal_id: int, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.PROPOSAL_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+
+            metadata = f"Vote on proposal {proposal_id}"
+
+            vote_data = token_contract.functions.vote(address, proposal_id, 1, metadata)
+
+            estimated_gas = vote_data.estimate_gas({"from": address})
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
+
+            vote_tx = vote_data.build_transaction({
+                "from": address,
+                "gas": int(estimated_gas * 1.2),
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
+                "nonce": self.used_nonce[address],
+                "chainId": web3.eth.chain_id
+            })
+
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, vote_tx)
             receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
             block_number = receipt.blockNumber
             self.used_nonce[address] += 1
@@ -733,25 +786,27 @@ class Helios:
                 print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS Funds{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate Random Validators{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}4. Claim Delegate Rewards{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}5. Deploy Token Contract{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}6. Run All Features{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}5. Vote Governance Proposal{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}6. Deploy Token Contract{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}7. Run All Features{Style.RESET_ALL}")
                 option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4/5] -> {Style.RESET_ALL}").strip())
 
-                if option in [1, 2, 3, 4, 5, 6]:
+                if option in [1, 2, 3, 4, 5, 6, 7]:
                     option_type = (
                         "Claim HLS Faucet" if option == 1 else 
                         "Bridge HLS Funds" if option == 2 else 
                         "Delegate Random Validators" if option == 3 else 
                         "Claim Delegate Rewards" if option == 4 else 
-                        "Deploy Token Contract" if option == 5 else 
+                        "Vote Governance Proposal" if option == 5 else 
+                        "Deploy Token Contract" if option == 6 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, or 6.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, 6, or 7.{Style.RESET_ALL}")
             except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, or 6).{Style.RESET_ALL}")
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, 6, or 7).{Style.RESET_ALL}")
         
         if option == 2:
             self.print_bridge_question()
@@ -761,11 +816,11 @@ class Helios:
             self.print_delegate_question()
             self.print_delay_question()
 
-        elif option == 5:
+        elif option == 6:
             self.print_deploy_question()
             self.print_delay_question()
             
-        elif option == 6:
+        elif option == 7:
             self.print_bridge_question()
             self.print_delegate_question()
             self.print_deploy_question()
@@ -894,7 +949,7 @@ class Helios:
         url = f"{self.BASE_API}/users/login"
         data = json.dumps(self.generate_payload(account, address))
         headers = {
-            **self.HEADERS[address],
+            **self.BASE_HEADERS[address],
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
         }
@@ -922,7 +977,7 @@ class Helios:
         url = f"{self.BASE_API}/faucet/check-eligibility"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet"})
         headers = {
-            **self.HEADERS[address],
+            **self.BASE_HEADERS[address],
             "Authorization": f"Bearer {self.access_tokens[address]}",
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
@@ -953,7 +1008,7 @@ class Helios:
         url = f"{self.BASE_API}/faucet/request"
         data = json.dumps({"token":"HLS", "chain":"helios-testnet", "amount":1, "turnstileToken":turnstile_token})
         headers = {
-            **self.HEADERS[address],
+            **self.BASE_HEADERS[address],
             "Authorization": f"Bearer {self.access_tokens[address]}",
             "Content-Length": str(len(data)),
             "Content-Type": "application/json"
@@ -974,6 +1029,34 @@ class Helios:
                     f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
                     f"{Fore.BLUE+Style.BRIGHT}Status  :{Style.RESET_ALL}"
                     f"{Fore.RED+Style.BRIGHT} Not Claimed {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+                )
+
+        return None
+    
+    async def proposal_lists(self, address: str, use_proxy: bool, retries=5):
+        data = json.dumps({
+            "jsonrpc":"2.0",
+            "method":"eth_getProposalsByPageAndSize",
+            "params":["0x1","0x14"],
+            "id":1
+        })
+        for attempt in range(retries):
+            proxy_url = self.get_next_proxy_for_account(address) if use_proxy else None
+            connector, proxy, proxy_auth = self.build_proxy_config(proxy_url)
+            try:
+                async with ClientSession(connector=connector, timeout=ClientTimeout(total=120)) as session:
+                    async with session.post(url=self.RPC_URL, headers=self.PORTAL_HEADERS[address], data=data, proxy=proxy, proxy_auth=proxy_auth) as response:
+                        response.raise_for_status()
+                        return await response.json()
+            except (Exception, ClientResponseError) as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(5)
+                    continue
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Fetch Proposal Lists Failed {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
                 )
@@ -1016,6 +1099,28 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} Login Failed {Style.RESET_ALL}"
             )
             return False
+        
+    async def process_fetch_proposal(self, address: str, use_proxy: bool):
+        propsal_lists = await self.proposal_lists(address, use_proxy)
+        if not propsal_lists: return False
+
+        proposals = propsal_lists.get("result", [])
+        
+        live_proposals = [
+            p for p in proposals
+            if p.get("status") == "VOTING_PERIOD"
+        ]
+
+        if not live_proposals: 
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} No Available Proposals {Style.RESET_ALL}"
+            )
+            return False
+
+        used_proposals = random.choice(live_proposals)
+
+        return used_proposals
         
     async def process_perform_bridge(self, account: str, address: str, dest_chain_id: int, use_proxy: bool):
         tx_hash, block_number = await self.perform_bridge(account, address, dest_chain_id, use_proxy)
@@ -1071,6 +1176,32 @@ class Helios:
 
     async def process_perform_claim_rewards(self, account: str, address: str, use_proxy: bool):
         tx_hash, block_number = await self.perform_claim_rewards(account, address, use_proxy)
+        if tx_hash and block_number:
+            explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+            )
+        else:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
+            )
+
+    async def process_perform_vote_proposal(self, account: str, address: str, proposal_id: int, use_proxy: bool):
+        tx_hash, block_number = await self.perform_vote_proposal(account, address, proposal_id, use_proxy)
         if tx_hash and block_number:
             explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
             self.log(
@@ -1260,6 +1391,33 @@ class Helios:
         await self.print_timer()
 
     async def process_option_5(self, account: str, address: str, use_proxy: bool):
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Proposal  :{Style.RESET_ALL}                       ")
+
+        proposals = await self.process_fetch_proposal(address, use_proxy)
+        if not proposals: return
+
+        proposal_id = proposals["id"]
+        title = proposals["title"]
+        proposer = proposals["proposer"]
+
+        
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}   Prop. Id :{Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {proposal_id} {Style.RESET_ALL}"
+        )
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}   Title    :{Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {title} {Style.RESET_ALL}"
+        )
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}   Proposer :{Style.RESET_ALL}"
+            f"{Fore.BLUE+Style.BRIGHT} {proposer} {Style.RESET_ALL}"
+        )
+        
+        await self.process_perform_vote_proposal(account, address, proposal_id, use_proxy)
+        await self.print_timer()
+
+    async def process_option_6(self, account: str, address: str, use_proxy: bool):
         self.log(f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}                       ")
 
         for i in range(self.deploy_count):
@@ -1286,7 +1444,7 @@ class Helios:
             )
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Supply   :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {raw_supply} {token_symbol} {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {raw_supply} {Style.RESET_ALL}"
             )
             
             await self.process_perform_deploy_contract(account, address, token_name, token_symbol, total_supply, use_proxy)
@@ -1321,6 +1479,9 @@ class Helios:
                 await self.process_option_5(account, address, use_proxy)
 
             elif option == 6:
+                await self.process_option_6(account, address, use_proxy)
+
+            elif option == 7:
                 await self.process_option_1(address, use_proxy)
                 await asyncio.sleep(5)
 
@@ -1334,6 +1495,9 @@ class Helios:
                 await asyncio.sleep(5)
                 
                 await self.process_option_5(account, address, use_proxy)
+                await asyncio.sleep(5)
+                
+                await self.process_option_6(account, address, use_proxy)
                 await asyncio.sleep(5)
 
     async def main(self):
@@ -1380,7 +1544,9 @@ class Helios:
                             )
                             continue
 
-                        self.HEADERS[address] = {
+                        user_agent = FakeUserAgent().random
+
+                        self.BASE_HEADERS[address] = {
                             "Accept": "application/json, text/plain, */*",
                             "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
                             "Origin": "https://testnet.helioschain.network",
@@ -1388,7 +1554,13 @@ class Helios:
                             "Sec-Fetch-Dest": "empty",
                             "Sec-Fetch-Mode": "cors",
                             "Sec-Fetch-Site": "same-site",
-                            "User-Agent": FakeUserAgent().random
+                            "User-Agent": user_agent
+                        }
+
+                        self.PORTAL_HEADERS[address] = {
+                            "Content-Type": "application/json",
+                            "Referer": "https://portal.helioschain.network/",
+                            "User-Agent": user_agent
                         }
 
                         await self.process_accounts(account, address, option, use_proxy_choice, rotate_proxy)
