@@ -87,6 +87,20 @@ class Helios:
                 ]
             },
             {
+                "type": "function",
+                "name": "hyperionProposal",
+                "stateMutability": "payable",
+                "inputs": [
+                    { "internalType": "string", "name": "title", "type": "string" },
+                    { "internalType": "string", "name": "description", "type": "string" },
+                    { "internalType": "string", "name": "msg", "type": "string" },
+                    { "internalType": "uint256", "name": "initialDepositAmount", "type": "uint256" }
+                ],
+                "outputs": [
+                    { "internalType": "uint64", "name": "proposalId", "type": "uint64" }
+                ]
+            },
+            {
                 "name": "vote",
                 "type": "function",
                 "stateMutability": "nonpayable",
@@ -117,6 +131,11 @@ class Helios:
         self.hls_delegate_amount = 0
         self.weth_delegate_amount = 0
         self.wbnb_delegate_amount = 0
+        self.create_proposal = False
+        self.proposal_title = None
+        self.proposal_description = None
+        self.proposal_deposit = 0
+        self.vote_count = 0
         self.deploy_count = 0
         self.min_delay = 0
         self.max_delay = 0
@@ -541,6 +560,53 @@ class Helios:
             )
             return None, None
         
+    async def perform_create_proposal(self, account: str, address: str, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+
+            msg = json.dumps({
+                "@type": "/helios.hyperion.v1.MsgUpdateOutTxTimeout", 
+                "signer": address, 
+                "chain_id": random.choice([11155111, 97]), 
+                "target_batch_timeout": 3600000, 
+                "target_outgoing_tx_timeout": 3600000
+            })
+
+            amount_to_wei = web3.to_wei(self.proposal_deposit, "ether")
+
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.PROPOSAL_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+
+            proposal_data = token_contract.functions.hyperionProposal(self.proposal_title, self.proposal_description, msg, amount_to_wei)
+
+            estimated_gas = proposal_data.estimate_gas({"from": address, "value":amount_to_wei})
+
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
+
+            proposal_tx = proposal_data.build_transaction({
+                "from": address,
+                "value": amount_to_wei,
+                "gas": int(estimated_gas * 1.2),
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
+                "nonce": self.used_nonce[address],
+                "chainId": web3.eth.chain_id
+            })
+
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, proposal_tx)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
+            block_number = receipt.blockNumber
+            self.used_nonce[address] += 1
+
+            return tx_hash, block_number
+        except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None, None
+        
+        
     async def perform_vote_proposal(self, account: str, address: str, proposal_id: int, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
@@ -730,6 +796,60 @@ class Helios:
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
     
+    def print_create_question(self):
+       while True:
+            proposal_title = str(input(f"{Fore.YELLOW + Style.BRIGHT}Input a Title For Proposal (eg. Vonssy) -> {Style.RESET_ALL}").strip())
+            if proposal_title:
+                self.proposal_title = proposal_title
+                break
+            else:
+                print(f"{Fore.RED + Style.BRIGHT}Proposal Title Cannot be Empty.{Style.RESET_ALL}")
+       
+       while True:
+            proposal_description = str(input(f"{Fore.YELLOW + Style.BRIGHT}Input a Description For Proposal (eg. Long Live's Vonssy!!!) -> {Style.RESET_ALL}").strip())
+            if proposal_description:
+                self.proposal_description = proposal_description
+                break
+            else:
+                print(f"{Fore.RED + Style.BRIGHT}Proposal Description Cannot be Empty.{Style.RESET_ALL}")
+       
+       while True:
+            try:
+                proposal_deposit = float(input(f"{Fore.YELLOW + Style.BRIGHT}Proposal Initial Deposit Amount [Min. 1 HLS] -> {Style.RESET_ALL}").strip())
+                if proposal_deposit >= 1:
+                    self.proposal_deposit = proposal_deposit
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Proposal Initial Deposit Amount must be >= 1.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+    
+    def print_proposal_question(self):
+       while True:
+            try:
+                create_proposal = str(input(f"{Fore.YELLOW + Style.BRIGHT}Create a Proposal? [y/n] -> {Style.RESET_ALL}").strip())
+                if create_proposal in ["y", "n"]:
+                    self.create_proposal = create_proposal == "y"
+                    if self.create_proposal:
+                        self.print_create_question()
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Proposal Initial Deposit Amount must be >= 1.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+    
+    def print_vote_question(self):
+        while True:
+            try:
+                vote_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Vote Proposal Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                if vote_count > 0:
+                    self.vote_count = vote_count
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Vote Proposal Count must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+    
     def print_deploy_question(self):
         while True:
             try:
@@ -786,27 +906,29 @@ class Helios:
                 print(f"{Fore.WHITE + Style.BRIGHT}2. Bridge HLS Funds{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}3. Delegate Random Validators{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}4. Claim Delegate Rewards{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}5. Vote Governance Proposal{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}6. Deploy Token Contract{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}7. Run All Features{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}5. Create Governance Proposal{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}6. Vote Governance Proposal{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}7. Deploy Token Contract{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}8. Run All Features{Style.RESET_ALL}")
                 option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4/5] -> {Style.RESET_ALL}").strip())
 
-                if option in [1, 2, 3, 4, 5, 6, 7]:
+                if option in [1, 2, 3, 4, 5, 6, 7, 8]:
                     option_type = (
                         "Claim HLS Faucet" if option == 1 else 
                         "Bridge HLS Funds" if option == 2 else 
                         "Delegate Random Validators" if option == 3 else 
                         "Claim Delegate Rewards" if option == 4 else 
-                        "Vote Governance Proposal" if option == 5 else 
-                        "Deploy Token Contract" if option == 6 else 
+                        "Create Governance Proposal" if option == 5 else 
+                        "Vote Governance Proposal" if option == 6 else 
+                        "Deploy Token Contract" if option == 7 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, 6, or 7.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, 6, 7, or 8.{Style.RESET_ALL}")
             except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, 6, or 7).{Style.RESET_ALL}")
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, 6, 7, or 8).{Style.RESET_ALL}")
         
         if option == 2:
             self.print_bridge_question()
@@ -816,13 +938,22 @@ class Helios:
             self.print_delegate_question()
             self.print_delay_question()
 
+        elif option == 5:
+            self.print_create_question()
+
         elif option == 6:
+            self.print_vote_question()
+            self.print_delay_question()
+
+        elif option == 7:
             self.print_deploy_question()
             self.print_delay_question()
             
-        elif option == 7:
+        elif option == 8:
             self.print_bridge_question()
             self.print_delegate_question()
+            self.print_proposal_question()
+            self.print_vote_question()
             self.print_deploy_question()
             self.print_delay_question()
 
@@ -1200,6 +1331,32 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
+    async def process_perform_create_proposal(self, account: str, address: str, use_proxy: bool):
+        tx_hash, block_number = await self.perform_create_proposal(account, address, use_proxy)
+        if tx_hash and block_number:
+            explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+            )
+        else:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
+            )
+
     async def process_perform_vote_proposal(self, account: str, address: str, proposal_id: int, use_proxy: bool):
         tx_hash, block_number = await self.perform_vote_proposal(account, address, proposal_id, use_proxy)
         if tx_hash and block_number:
@@ -1391,33 +1548,60 @@ class Helios:
         await self.print_timer()
 
     async def process_option_5(self, account: str, address: str, use_proxy: bool):
-        self.log(f"{Fore.CYAN+Style.BRIGHT}Proposal  :{Style.RESET_ALL}                       ")
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Create    :{Style.RESET_ALL}                       ")
 
-        proposals = await self.process_fetch_proposal(address, use_proxy)
-        if not proposals: return
-
-        proposal_id = proposals["id"]
-        title = proposals["title"]
-        proposer = proposals["proposer"]
-
-        
-        self.log(
-            f"{Fore.CYAN+Style.BRIGHT}   Prop. Id :{Style.RESET_ALL}"
-            f"{Fore.WHITE+Style.BRIGHT} {proposal_id} {Style.RESET_ALL}"
-        )
         self.log(
             f"{Fore.CYAN+Style.BRIGHT}   Title    :{Style.RESET_ALL}"
-            f"{Fore.WHITE+Style.BRIGHT} {title} {Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {self.proposal_title} {Style.RESET_ALL}"
         )
+
         self.log(
-            f"{Fore.CYAN+Style.BRIGHT}   Proposer :{Style.RESET_ALL}"
-            f"{Fore.BLUE+Style.BRIGHT} {proposer} {Style.RESET_ALL}"
+            f"{Fore.CYAN+Style.BRIGHT}   Desc     :{Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {self.proposal_description} {Style.RESET_ALL}"
+        )
+
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}   Deposit  :{Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {self.proposal_deposit} HLS {Style.RESET_ALL}"
         )
         
-        await self.process_perform_vote_proposal(account, address, proposal_id, use_proxy)
+        await self.process_perform_create_proposal(account, address, use_proxy)
         await self.print_timer()
 
     async def process_option_6(self, account: str, address: str, use_proxy: bool):
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Vote      :{Style.RESET_ALL}                       ")
+        for i in range(self.vote_count):
+            self.log(
+                f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{self.vote_count}{Style.RESET_ALL}                                   "
+            )
+
+            proposals = await self.process_fetch_proposal(address, use_proxy)
+            if not proposals: continue
+
+            proposal_id = proposals["id"]
+            title = proposals["title"]
+            proposer = proposals["proposer"]
+
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Prop. Id :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {proposal_id} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Title    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {title} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Proposer :{Style.RESET_ALL}"
+                f"{Fore.BLUE+Style.BRIGHT} {proposer} {Style.RESET_ALL}"
+            )
+            
+            await self.process_perform_vote_proposal(account, address, proposal_id, use_proxy)
+            await self.print_timer()
+
+    async def process_option_7(self, account: str, address: str, use_proxy: bool):
         self.log(f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}                       ")
 
         for i in range(self.deploy_count):
@@ -1482,6 +1666,9 @@ class Helios:
                 await self.process_option_6(account, address, use_proxy)
 
             elif option == 7:
+                await self.process_option_7(account, address, use_proxy)
+
+            elif option == 8:
                 await self.process_option_1(address, use_proxy)
                 await asyncio.sleep(5)
 
@@ -1494,10 +1681,14 @@ class Helios:
                 await self.process_option_4(account, address, use_proxy)
                 await asyncio.sleep(5)
                 
-                await self.process_option_5(account, address, use_proxy)
-                await asyncio.sleep(5)
+                if self.create_proposal:
+                    await self.process_option_5(account, address, use_proxy)
+                    await asyncio.sleep(5)
                 
                 await self.process_option_6(account, address, use_proxy)
+                await asyncio.sleep(5)
+                
+                await self.process_option_7(account, address, use_proxy)
                 await asyncio.sleep(5)
 
     async def main(self):
