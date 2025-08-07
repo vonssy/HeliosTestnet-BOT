@@ -1564,6 +1564,18 @@ class Helios:
             f"{Fore.CYAN+Style.BRIGHT}   Deposit  :{Style.RESET_ALL}"
             f"{Fore.WHITE+Style.BRIGHT} {self.proposal_deposit} HLS {Style.RESET_ALL}"
         )
+
+        balance = await self.get_token_balance(address, self.HLS_CONTRACT_ADDRESS, use_proxy)
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
+            f"{Fore.WHITE+Style.BRIGHT} {balance} HLS {Style.RESET_ALL}"
+        )
+        if not balance or balance <= self.proposal_deposit:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.YELLOW+Style.BRIGHT} Insufficient HLS Token Balance {Style.RESET_ALL}"
+            )
+            return
         
         await self.process_perform_create_proposal(account, address, use_proxy)
         await self.print_timer()
