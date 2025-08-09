@@ -747,7 +747,7 @@ class Helios:
                 f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
                 f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
             )
-            return None, None
+            return None, None, None
         
     async def perform_create_cron(self, account: str, address: str, use_proxy: bool):
         try:
