@@ -1,9 +1,10 @@
 # Helios Testnet BOT
 Helios Testnet BOT
 
-- Register Here : [Helios Testnet](https://testnet.helioschain.network/?code=CHRONOS-01567)
-- Use Code `CHRONOS-01567`
+- Register Here : [Helios Testnet](https://testnet.helioschain.network/?code=ASTRAL-44773)
+- Use Code `ASTRAL-44773`
 - Connect Discord Account
+- Open Ticket In Helios Discord Server
 
 ## Features
 
