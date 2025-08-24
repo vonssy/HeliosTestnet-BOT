@@ -9,7 +9,7 @@ from aiohttp_socks import ProxyConnector
 from fake_useragent import FakeUserAgent
 from datetime import datetime
 from colorama import *
-import asyncio, random, json, re, os, pytz
+import asyncio, random, string, json, re, os, pytz
 
 wib = pytz.timezone('Asia/Jakarta')
 
@@ -27,6 +27,7 @@ class Helios:
         self.DELEGATE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000800"
         self.REWARDS_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000801"
         self.PROPOSAL_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000805"
+        self.PRECOMPILE_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000806"
         self.CHRONOS_ROUTER_ADDRESS = "0x0000000000000000000000000000000000000830"
         self.DEST_TOKENS = [
             { "Ticker": "Sepolia", "ChainId": 11155111 },
@@ -117,6 +118,22 @@ class Helios:
             },
             {
                 "type": "function",
+                "name": "createErc20",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    { "internalType": "string", "name": "name", "type": "string" },
+                    { "internalType": "string", "name": "symbol", "type": "string" },
+                    { "internalType": "string", "name": "denom", "type": "string" },
+                    { "internalType": "uint256", "name": "totalSupply", "type": "uint256" },
+                    { "internalType": "uint8", "name": "decimals", "type": "uint8" },
+                    { "internalType": "string", "name": "logoBase64", "type": "string" }
+                ],
+                "outputs": [
+                    { "internalType": "address", "name": "tokenAddress", "type": "address" }
+                ]
+            },
+            {
+                "type": "function",
                 "name": "createCron",
                 "stateMutability": "nonpayable",
                 "inputs": [
@@ -156,8 +173,9 @@ class Helios:
         self.proposal_description = None
         self.proposal_deposit = 0
         self.vote_count = 0
-        self.deploy_count = 0
-        self.cron_count = 0
+        self.deploy_token_count = 0
+        self.deploy_contract_count = 0
+        self.deploy_chronos_count = 0
         self.min_delay = 0
         self.max_delay = 0
 
@@ -336,13 +354,28 @@ class Helios:
         return asset, ticker, denom, amount
         
     def generate_raw_token(self):
-        numbers = random.randint(0, 99999)
-        token_name = f"Token{numbers}"
-        token_symbol = f"T{numbers}"
+        default_name, default_symbol = random.choice([
+            ("Token", "TKN"), ("MyToken", "MTK"), ("NewToken", "NTK"),
+            ("CryptoCoin", "CRC"), ("SmartToken", "SMT"), ("MetaCoin", "MTC"),
+            ("ChainToken", "CTK"), ("BlockCoin", "BKC"), ("FutureToken", "FUT"),
+            ("GalaxyCoin", "GLX"), ("QuantumToken", "QTK"), ("StarCoin", "STR"),
+            ("HyperToken", "HPT"), ("NovaCoin", "NVC"), ("PulseToken", "PLT"),
+            ("OrbitCoin", "ORC"), ("UnityToken", "UNT"), ("PrimeCoin", "PMC"),
+            ("AeroToken", "AET"), ("LunaCoin", "LNC"),
+        ])
+
+        numbers = str(random.randint(0, 999999))
+
+        token_name = default_name + numbers
+        token_symbol = default_symbol + numbers
+
+        prefix = random.choice(string.ascii_lowercase)
+        denom = prefix + token_name.lower()
+
         raw_supply = random.randint(1000, 1_000_000)
         total_supply = raw_supply * (10 ** 18)
 
-        return token_name, token_symbol, raw_supply, total_supply
+        return token_name, token_symbol, denom, raw_supply, total_supply
         
     async def get_web3_with_check(self, address: str, use_proxy: bool, retries=3, timeout=60):
         request_kwargs = {"timeout": timeout}
@@ -413,24 +446,19 @@ class Helios:
             )
             return None
     
-    async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, estimated_fees: float, use_proxy: bool):
+    async def approving_token(self, account: str, address: str, spender_address: str, contract_address: str, required: int, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
             
             spender = web3.to_checksum_address(spender_address)
             token_contract = web3.eth.contract(address=web3.to_checksum_address(contract_address), abi=self.ERC20_CONTRACT_ABI)
-            decimals = token_contract.functions.decimals().call()
-
-            amount_to_wei = int(self.bridge_amount * (10 ** decimals)) + estimated_fees
 
             allowance = token_contract.functions.allowance(address, spender).call()
-            if allowance < amount_to_wei:
-                approve_data = token_contract.functions.approve(spender, amount_to_wei)
+            if allowance < required:
+                approve_data = token_contract.functions.approve(spender, required)
 
-                latest_block = web3.eth.get_block("latest")
-                base_fee = latest_block.get("baseFeePerGas", 0)
-                max_priority_fee = web3.to_wei(1.111, "gwei")
-                max_fee = base_fee + max_priority_fee
+                max_priority_fee = web3.to_wei(2.5, "gwei")
+                max_fee = web3.to_wei(4.5, "gwei")
 
                 approve_tx = approve_data.build_transaction({
                     "from": address,
@@ -450,7 +478,7 @@ class Helios:
                 
                 self.log(
                     f"{Fore.CYAN+Style.BRIGHT}   Approve  :{Style.RESET_ALL}"
-                    f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}                                   "
                 )
                 self.log(
                     f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
@@ -464,7 +492,7 @@ class Helios:
                     f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
                     f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
                 )
-                await asyncio.sleep(10)
+                await self.print_timer()
             
             return True
         except Exception as e:
@@ -475,9 +503,12 @@ class Helios:
             web3 = await self.get_web3_with_check(address, use_proxy)
             
             bridge_amount = web3.to_wei(self.bridge_amount, "ether")
+
             estimated_fees = int(0.5 * (10 ** 18))
 
-            await self.approving_token(account, address, self.BRIDGE_ROUTER_ADDRESS, self.HLS_CONTRACT_ADDRESS, estimated_fees, use_proxy)
+            required = bridge_amount + estimated_fees
+
+            await self.approving_token(account, address, self.BRIDGE_ROUTER_ADDRESS, self.HLS_CONTRACT_ADDRESS, required, use_proxy)
 
             token_contract = web3.eth.contract(address=web3.to_checksum_address(self.BRIDGE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
 
@@ -486,8 +517,8 @@ class Helios:
             )
 
             estimated_gas = bridge_data.estimate_gas({"from": address})
-            max_priority_fee = web3.to_wei(1.111, "gwei")
-            max_fee = max_priority_fee
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
 
             bridge_tx = bridge_data.build_transaction({
                 "from": address,
@@ -664,6 +695,41 @@ class Helios:
             )
             return None, None
         
+    async def perform_deploy_token(self, account: str, address: str, token_name: str, token_symbol: str, denom: str, total_supply: int, use_proxy: bool):
+        try:
+            web3 = await self.get_web3_with_check(address, use_proxy)
+
+            token_contract = web3.eth.contract(address=web3.to_checksum_address(self.PRECOMPILE_ROUTER_ADDRESS), abi=self.HELIOS_CONTRACT_ABI)
+
+            deploy_data = token_contract.functions.createErc20(token_name, token_symbol, denom, total_supply, 18, "")
+
+            estimated_gas = deploy_data.estimate_gas({"from": address})
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
+
+            deploy_tx = deploy_data.build_transaction({
+                "from": address,
+                "gas": int(estimated_gas * 1.2),
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
+                "nonce": self.used_nonce[address],
+                "chainId": web3.eth.chain_id
+            })
+
+            tx_hash = await self.send_raw_transaction_with_retries(account, web3, deploy_tx)
+            receipt = await self.wait_for_receipt_with_retries(web3, tx_hash)
+            block_number = receipt.blockNumber
+
+            self.used_nonce[address] += 1
+
+            return tx_hash, block_number
+        except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Message  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
+            return None, None
+        
     async def perform_deploy_contract(self, account: str, address: str, token_name: str, token_symbol: str, total_supply: int, use_proxy: bool):
         try:
             web3 = await self.get_web3_with_check(address, use_proxy)
@@ -722,14 +788,14 @@ class Helios:
             bytecode = contract_interface['bin']
             TokenContract = web3.eth.contract(abi=abi, bytecode=bytecode)
 
-            max_priority_fee = web3.to_wei(1.111, "gwei")
-            max_fee = max_priority_fee
+            max_priority_fee = web3.to_wei(2.5, "gwei")
+            max_fee = web3.to_wei(4.5, "gwei")
 
             tx = TokenContract.constructor().build_transaction({
                 "from": address,
                 "gas": 3000000,
-                "maxFeePerGas": max_fee,
-                "maxPriorityFeePerGas": max_priority_fee,
+                "maxFeePerGas": int(max_fee),
+                "maxPriorityFeePerGas": int(max_priority_fee),
                 "nonce": self.used_nonce[address],
                 "chainId": web3.eth.chain_id
             })
@@ -865,7 +931,7 @@ class Helios:
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a float or decimal number.{Style.RESET_ALL}")
     
-    def print_create_question(self):
+    def print_create_proposal_question(self):
        while True:
             proposal_title = str(input(f"{Fore.YELLOW + Style.BRIGHT}Input a Title For Proposal (eg. Vonssy) -> {Style.RESET_ALL}").strip())
             if proposal_title:
@@ -900,14 +966,14 @@ class Helios:
                 if create_proposal in ["y", "n"]:
                     self.create_proposal = create_proposal == "y"
                     if self.create_proposal:
-                        self.print_create_question()
+                        self.print_create_proposal_question()
                     break
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Proposal Initial Deposit Amount must be >= 1.{Style.RESET_ALL}")
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
     
-    def print_vote_question(self):
+    def print_vote_proposal_question(self):
         while True:
             try:
                 vote_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Vote Proposal Count For Each Wallet -> {Style.RESET_ALL}").strip())
@@ -919,24 +985,36 @@ class Helios:
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
     
-    def print_deploy_question(self):
+    def print_deploy_token_question(self):
         while True:
             try:
-                deploy_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Deploy Contract Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                deploy_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Deploy Token Contract Count For Each Wallet -> {Style.RESET_ALL}").strip())
                 if deploy_count > 0:
-                    self.deploy_count = deploy_count
+                    self.deploy_token_count = deploy_count
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Deploy Contract Count must be > 0.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Deploy Token Contract Count must be > 0.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
+
+    def print_deploy_contract_question(self):
+        while True:
+            try:
+                deploy_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Deploy Smart Contract Count For Each Wallet -> {Style.RESET_ALL}").strip())
+                if deploy_count > 0:
+                    self.deploy_contract_count = deploy_count
+                    break
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Deploy Smart Contract Count must be > 0.{Style.RESET_ALL}")
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
     
-    def print_cron_question(self):
+    def print_deploy_chronos_question(self):
         while True:
             try:
                 cron_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Deploy Chronos Count For Each Wallet -> {Style.RESET_ALL}").strip())
                 if cron_count > 0:
-                    self.cron_count = cron_count
+                    self.deploy_chronos_count = cron_count
                     break
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Deploy Chronos Count must be > 0.{Style.RESET_ALL}")
@@ -990,11 +1068,12 @@ class Helios:
                 print(f"{Fore.WHITE + Style.BRIGHT}5. Create Governance Proposal{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}6. Vote Governance Proposal{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}7. Deploy Token Contract{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}8. Deploy Chronos Scheduled{Style.RESET_ALL}")
-                print(f"{Fore.WHITE + Style.BRIGHT}9. Run All Features{Style.RESET_ALL}")
-                option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4/5] -> {Style.RESET_ALL}").strip())
+                print(f"{Fore.WHITE + Style.BRIGHT}8. Deploy Smart Contract{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}9. Deploy Chronos Scheduled{Style.RESET_ALL}")
+                print(f"{Fore.WHITE + Style.BRIGHT}10. Run All Features{Style.RESET_ALL}")
+                option = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2/3/4/5/6/7/8/9/10] -> {Style.RESET_ALL}").strip())
 
-                if option in [1, 2, 3, 4, 5, 6, 7, 8, 9]:
+                if option in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
                     option_type = (
                         "Claim HLS Faucet" if option == 1 else 
                         "Bridge HLS Funds" if option == 2 else 
@@ -1003,15 +1082,16 @@ class Helios:
                         "Create Governance Proposal" if option == 5 else 
                         "Vote Governance Proposal" if option == 6 else 
                         "Deploy Token Contract" if option == 7 else 
-                        "Deploy Chronos Scheduled" if option == 8 else 
+                        "Deploy Smart Contract" if option == 8 else 
+                        "Deploy Chronos Scheduled" if option == 9 else 
                         "Run All Features"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}{option_type} Selected.{Style.RESET_ALL}")
                     break
                 else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, 6, 7, 8, or 9.{Style.RESET_ALL}")
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10.{Style.RESET_ALL}")
             except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, 6, 7, 8, or 9).{Style.RESET_ALL}")
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2, 3, 4, 5, 6, 7, 8, 9, or 10).{Style.RESET_ALL}")
         
         if option == 2:
             self.print_bridge_question()
@@ -1022,27 +1102,32 @@ class Helios:
             self.print_delay_question()
 
         elif option == 5:
-            self.print_create_question()
+            self.print_create_proposal_question()
 
         elif option == 6:
-            self.print_vote_question()
+            self.print_vote_proposal_question()
             self.print_delay_question()
 
         elif option == 7:
-            self.print_deploy_question()
+            self.print_deploy_token_question()
             self.print_delay_question()
 
         elif option == 8:
-            self.print_cron_question()
+            self.print_deploy_contract_question()
+            self.print_delay_question()
+
+        elif option == 9:
+            self.print_deploy_chronos_question()
             self.print_delay_question()
             
-        elif option == 9:
+        elif option == 10:
             self.print_bridge_question()
             self.print_delegate_question()
             self.print_proposal_question()
-            self.print_vote_question()
-            self.print_deploy_question()
-            self.print_cron_question()
+            self.print_vote_proposal_question()
+            self.print_deploy_token_question()
+            self.print_deploy_contract_question()
+            self.print_deploy_chronos_question()
             self.print_delay_question()
 
         while True:
@@ -1471,6 +1556,32 @@ class Helios:
                 f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
             )
 
+    async def process_perform_deploy_token(self, account: str, address: str, token_name: str, token_symbol: str, denom: str, total_supply: int, use_proxy: bool):
+        tx_hash, block_number = await self.perform_deploy_token(account, address, token_name, token_symbol, denom, total_supply, use_proxy)
+        if tx_hash and block_number:
+            explorer = f"https://explorer.helioschainlabs.org/tx/{tx_hash}"
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Block    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {block_number} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {explorer} {Style.RESET_ALL}"
+            )
+        else:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Perform On-Chain Failed {Style.RESET_ALL}"
+            )
+
     async def process_perform_deploy_contract(self, account: str, address: str, token_name: str, token_symbol: str, total_supply: int, use_proxy: bool):
         tx_hash, block_number, contract_address = await self.perform_deploy_contract(account, address, token_name, token_symbol, total_supply, use_proxy)
         if tx_hash and block_number and contract_address:
@@ -1728,17 +1839,60 @@ class Helios:
             await self.print_timer()
 
     async def process_option_7(self, account: str, address: str, use_proxy: bool):
-        self.log(f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}                       ")
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}"
+            f"{Fore.BLUE+Style.BRIGHT} Token Contract {Style.RESET_ALL}                       "
+        )
 
-        for i in range(self.deploy_count):
+        for i in range(self.deploy_token_count):
             self.log(
                 f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
                 f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT}{self.deploy_count}{Style.RESET_ALL}                                   "
+                f"{Fore.WHITE+Style.BRIGHT}{self.deploy_token_count}{Style.RESET_ALL}                                   "
             )
 
-            token_name, token_symbol, raw_supply, total_supply = self.generate_raw_token()
+            token_name, token_symbol, denom, raw_supply, total_supply = self.generate_raw_token()
+
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Name     :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {token_name} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Symbol   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {token_symbol} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Denom    :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {denom} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Decimals :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} 18 {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}   Supply   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {raw_supply} {Style.RESET_ALL}"
+            )
+            
+            await self.process_perform_deploy_token(account, address, token_name, token_symbol, denom, total_supply, use_proxy)
+            await self.print_timer()
+    
+    async def process_option_8(self, account: str, address: str, use_proxy: bool):
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}Deploy    :{Style.RESET_ALL}"
+            f"{Fore.BLUE+Style.BRIGHT} Smart Contract {Style.RESET_ALL}                       "
+        )
+
+        for i in range(self.deploy_contract_count):
+            self.log(
+                f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{self.deploy_contract_count}{Style.RESET_ALL}                                   "
+            )
+
+            token_name, token_symbol, denom, raw_supply, total_supply = self.generate_raw_token()
 
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}   Name     :{Style.RESET_ALL}"
@@ -1760,15 +1914,15 @@ class Helios:
             await self.process_perform_deploy_contract(account, address, token_name, token_symbol, total_supply, use_proxy)
             await self.print_timer()
 
-    async def process_option_8(self, account: str, address: str, use_proxy: bool):
+    async def process_option_9(self, account: str, address: str, use_proxy: bool):
         self.log(f"{Fore.CYAN+Style.BRIGHT}Chronos   :{Style.RESET_ALL}                       ")
 
-        for i in range(self.cron_count):
+        for i in range(self.deploy_chronos_count):
             self.log(
                 f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
                 f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT}{self.cron_count}{Style.RESET_ALL}                                   "
+                f"{Fore.WHITE+Style.BRIGHT}{self.deploy_chronos_count}{Style.RESET_ALL}                                   "
             )
             
             await self.process_perform_create_cron(account, address, use_proxy)
@@ -1777,11 +1931,14 @@ class Helios:
     async def process_accounts(self, account: str, address: str, option: int, use_proxy: bool, rotate_proxy: bool):
         logined = await self.process_user_login(account, address, use_proxy, rotate_proxy)
         if logined:
-            web3 = await self.get_web3_with_check(address, use_proxy)
-            if not web3:
+            try:
+                web3 = await self.get_web3_with_check(address, use_proxy)
+            except Exception as e:
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}Status    :{Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}Status  :{Style.RESET_ALL}"
                     f"{Fore.RED+Style.BRIGHT} Web3 Not Connected {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
                 )
                 return
             
@@ -1812,30 +1969,27 @@ class Helios:
                 await self.process_option_8(account, address, use_proxy)
 
             elif option == 9:
+                await self.process_option_9(account, address, use_proxy)
+
+            elif option == 10:
                 await self.process_option_1(address, use_proxy)
-                await asyncio.sleep(5)
 
                 await self.process_option_2(account, address, use_proxy)
-                await asyncio.sleep(5)
                 
                 await self.process_option_3(account, address, use_proxy)
-                await asyncio.sleep(5)
                 
                 await self.process_option_4(account, address, use_proxy)
-                await asyncio.sleep(5)
                 
                 if self.create_proposal:
                     await self.process_option_5(account, address, use_proxy)
-                    await asyncio.sleep(5)
                 
                 await self.process_option_6(account, address, use_proxy)
-                await asyncio.sleep(5)
                 
                 await self.process_option_7(account, address, use_proxy)
-                await asyncio.sleep(5)
                 
                 await self.process_option_8(account, address, use_proxy)
-                await asyncio.sleep(5)
+
+                await self.process_option_9(account, address, use_proxy)
 
     async def main(self):
         try:

@@ -20,10 +20,9 @@ Helios Testnet BOT
   - Auto Create Governance Proposal
   - Auto Vote Governance Proposal
   - Auto Deploy Token Contract
+  - Auto Deploy Smart Contract
   - Auto Deploy Chronos Scheduled
   - Multi Accounts
-
-### Note: Other features will be updated soon.
 
 ## Requiremnets
 
